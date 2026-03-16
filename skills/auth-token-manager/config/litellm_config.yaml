@@ -1,0 +1,17 @@
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: "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"
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_key: "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"
+  - model_name: claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: "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"
+
+general_settings:
+  master_key: "local"
+  drop_params: true
