@@ -1,145 +1,107 @@
 # auth-token-manager
 
-ניהול מלא של טוקני AI (Claude OAuth, Gemini OAuth) לשימוש אישי על מספר פרויקטים
-במחשב אחד — ללא API key בתשלום.
+Manages AI provider OAuth tokens for personal use — no paid API keys needed.
+Solves two distinct problems with two dedicated solutions.
 
 ---
 
-## עקרון הפעולה
+## The Two Problems & Solutions
+
+### Problem A: Claude Code CLI gets 401 every few hours
+**Cause:** CLI OAuth tokens in `~/.claude.json` expire after a few hours.
+**Fix:** CLIProxyAPI — Docker service on port 8317 that intercepts CLI requests
+and auto-refreshes tokens.
+
+### Problem B: Other apps need Claude/Gemini without API key
+**Fix:** LiteLLM proxy — Docker service on port 8080 with OpenAI-compatible API.
+
+---
+
+## Architecture
 
 ```
-claude setup-token  ←  פעם אחת ידני לכל מחשב
-        │
-        ▼
-~/.claude/.credentials.json        ← Claude CLI כותב לכאן
-        │
-        │  cron יומי (refresh_token.py)
-        ▼
-~/.config/ai-auth/tokens.env       ← מקור אמת מרכזי (chmod 600)
-        │
-        ├── auto-sourced בכל shell פתוח
-        ├── Project A / .env
-        ├── Project B / .env
-        │
-        ▼
-Docker: ai-proxy → localhost:8080   ← OpenAI-compatible endpoint
-                                       מנוהל על ידי proxy_manager.py
+┌─────────────────────────────────────────────────────────────┐
+│                         Your Machine                        │
+│                                                             │
+│  ~/.config/ai-auth/tokens.env   ← central token store      │
+│                                                             │
+│  ┌──────────────────────┐   ┌─────────────────────────┐    │
+│  │  CLIProxyAPI         │   │  LiteLLM proxy          │    │
+│  │  localhost:8317      │   │  localhost:8080         │    │
+│  │  fixes CLI 401s      │   │  for your apps          │    │
+│  └──────────────────────┘   └─────────────────────────┘    │
+│         ↑                             ↑                     │
+│  Claude Code CLI            Project A, B, N                 │
+│  (ANTHROPIC_BASE_URL)       (AI_PROXY_URL)                  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## מבנה הקבצים
+## File Structure
 
 ```
 auth-token-manager/
-│
-├── README.md                   ← המסמך הזה
-├── SKILL.md                    ← entry point לAI agent
-│
-├── scripts/                    ← כלים להרצה על המחשב
-│   ├── install.sh              ← wizard התקנה ראשונית (פעם אחת למחשב)
-│   ├── refresh_token.py        ← cron יומי + כתיבה לcentral env + קישור פרויקטים
-│   └── proxy_manager.py        ← ניהול Docker proxy lifecycle
-│
-├── commands/                   ← הוראות לAI agent לפי פעולה
-│   └── proxy-setup.md          ← agent לשילוב proxy בפרויקט קיים
-│
-└── references/                 ← תיעוד טכני מפורט
-    ├── claude-oauth.md         ← מחזור חיים של Claude token
-    ├── gemini-oauth.md         ← מחזור חיים של Gemini token
-    └── cli-proxy.md            ← חיבור סוגי פרויקטים לproxy
+├── README.md
+├── SKILL.md                              ← AI agent entry point
+├── scripts/
+│   ├── install.sh                        ← first-time machine wizard
+│   ├── cliproxyapi_manager.sh            ← CLIProxyAPI lifecycle (NEW)
+│   ├── refresh_token.py                  ← daily cron
+│   └── proxy_manager.py                  ← LiteLLM lifecycle
+├── commands/
+│   └── proxy-setup/
+│       └── proxy-setup.md               ← agent for project integration
+└── references/
+    ├── cliproxyapi.md                    ← CLIProxyAPI full guide (NEW)
+    ├── cli-proxy.md                      ← LiteLLM connection patterns
+    ├── claude-oauth.md                   ← claude setup-token internals
+    └── gemini-oauth.md                   ← Gemini gcloud flow
 ```
 
 ---
 
-## שני שלבים — שני כלים שונים
-
-### שלב א: התקנה ראשונית על מחשב חדש → `install.sh`
-
-מופעל **פעם אחת** על כל מחשב.
+## Quick Start — New Machine
 
 ```bash
+# 1. Run wizard (sets up everything)
 bash ~/.claude/skills/auth-token-manager/scripts/install.sh
 
-# Custom path לtokens:
-AI_AUTH_CENTRAL_ENV=/custom/path/tokens.env bash install.sh
-```
-
-**מה ה-wizard עושה:**
-1. בדיקת תלויות — python3, Node.js, Claude CLI, Docker (מציע להתקין חסרים)
-2. יצירת Claude OAuth token — מוביל דרך browser auth
-3. הגדרת Gemini OAuth — אופציונלי, דרך `gcloud auth login`
-4. יצירת `~/.config/ai-auth/tokens.env` — מקור אמת מרכזי
-5. הוספת sourcing ל-`~/.bashrc` / `~/.zshrc`
-6. התקנת cron יומי ב-06:00
-7. הפעלת Docker proxy ראשונית
-
-**לאחר ה-wizard:** המחשב מוכן. אין צורך בשום פעולה עד לפקיעת הטוקן (~שנה).
-
----
-
-### שלב ב: שילוב פרויקט קיים → `/proxy-setup` (agent command)
-
-מופעל על **כל פרויקט** שרוצים לחבר לproxy.
-
-**הפעלה:** שלח לagent פרומפט כגון:
-```
-/proxy-setup
-שלב את הproxy בפרויקט הנוכחי
-חבר את הפרויקט ל-Claude
-```
-
-**מה ה-agent עושה (7 phases):**
-1. **Wizard** — שואל provider (Claude/Gemini/שניהם), model, ומצב cleanup
-2. **System check** — בודק token, מעלה proxy אם נפל
-3. **Codebase scan** — מאתר כל קריאות LLM קיימות בקוד
-4. **Implementation** — מחליף קריאות ישנות לOpenAI SDK דרך proxy
-5. **Env cleanup** — מנקה API keys ישנים, מעדכן requirements.txt
-6. **Verification** — בדיקת syntax + proxy models
-7. **LLM Validation** — שאילתא אמיתית לכל מודל שנבחר ← הכי חשוב
-8. **Summary Report** — דוח מלא של מה בוצע
-
----
-
-## מחזור חיים של טוקנים
-
-| Provider | תוקף | רענון | מה הcron עושה |
-|----------|------|-------|----------------|
-| Claude OAuth | ~שנה | ❌ אין silent refresh | קורא טוקן קיים, מתריע לפני פקיעה |
-| Gemini OAuth | ~שעה | ✅ gcloud אוטומטי | מריץ gcloud לטוקן טרי, proxy restart אם השתנה |
-
-**התראות Claude לפי ימים:**
-```
-≥ 14 ימים   → שקט, כותב טוקן לcentral env
-7-14 ימים   → התראה בלוג: "N days left, action needed soon"
-< 7 ימים    → התראה דחופה: "URGENT: run claude setup-token"
-< 0 ימים    → קריטי: עוצר, לא כותב טוקן פג
-```
-
-**חידוש שנתי (~פעם בשנה, ~5 דקות):**
-```bash
-claude setup-token        # browser auth
-token-refresh --force     # כותב טוקן חדש + proxy restart
+# 2. Reload shell
 source ~/.bashrc
+
+# 3. Fix 401 errors permanently (one-time login)
+cliproxy login
+```
+
+**For remote/SSH (Termux, PC → server):**
+```bash
+# On your LOCAL machine first:
+ssh -L 54545:127.0.0.1:54545 user@your-server
+
+# Then on the server:
+cliproxy login
+# Open the URL in your LOCAL browser
 ```
 
 ---
 
-## פקודות זמינות לאחר install.sh
+## All Commands
 
+### CLIProxyAPI — fixes Claude Code CLI 401 errors
 ```bash
-# בדיקת סטטוס מלא (token Claude + Gemini + proxy)
-token-status
+cliproxy setup     # first-time setup
+cliproxy login     # one-time OAuth authentication
+cliproxy start
+cliproxy stop
+cliproxy restart
+cliproxy status    # shows container + token + ANTHROPIC_BASE_URL
+cliproxy logs
+```
 
-# רענון ידני של central env
-token-refresh
-token-refresh --force     # כופה כתיבה גם אם הכל תקין
-
-# קישור פרויקט למקור האמת
-token-link /path/to/project
-
-# ניהול proxy
-token-proxy               # start (default)
+### LiteLLM proxy — for your apps
+```bash
+token-proxy               # start
 token-proxy --stop
 token-proxy --restart
 token-proxy --status
@@ -147,12 +109,30 @@ token-proxy --logs
 token-proxy --port 9090   # custom port
 ```
 
+### Token management
+```bash
+token-status                    # full status: Claude + Gemini + both proxies
+token-refresh                   # update central env
+token-refresh --force
+token-link /path/to/project     # wire a project to LiteLLM proxy
+```
+
 ---
 
-## חיבור פרויקט לproxy (לאחר token-link)
+## Token Lifecycle
 
-### Python / FastAPI
+| Token | Stored | Expires | Refresh |
+|-------|--------|---------|---------|
+| Claude Code CLI OAuth | `~/.claude.json` | hours | ✅ CLIProxyAPI auto |
+| claude setup-token | `~/.claude/.credentials.json` | ~1 year | ❌ manual yearly |
+| Gemini gcloud | `~/.config/gcloud/` | ~1 hour | ✅ gcloud auto |
+
+---
+
+## Connecting a Project (LiteLLM proxy)
+
 ```python
+# Python / FastAPI
 from openai import AsyncOpenAI
 import os
 
@@ -160,23 +140,10 @@ llm = AsyncOpenAI(
     base_url=os.getenv("AI_PROXY_URL", "http://localhost:8080/v1"),
     api_key="local",
 )
-response = await llm.chat.completions.create(
-    model="claude-sonnet-4-6",
-    messages=[{"role": "user", "content": "hello"}]
-)
 ```
 
-### TypeScript / Node
-```typescript
-import OpenAI from 'openai'
-const llm = new OpenAI({
-  baseURL: process.env.AI_PROXY_URL ?? 'http://localhost:8080/v1',
-  apiKey: 'local',
-})
-```
-
-### Docker project
 ```yaml
+# docker-compose.yml
 services:
   your-app:
     env_file: .env
@@ -189,38 +156,9 @@ services:
 
 ---
 
-## מודלים זמינים דרך הproxy
+## Security
 
-| שם בבקשה | מפנה ל |
-|----------|--------|
-| `claude` | claude-sonnet-4-6 (alias) |
-| `claude-sonnet-4-6` | Claude Sonnet |
-| `claude-opus-4-6` | Claude Opus |
-| `claude-haiku-4-5` | Claude Haiku |
-| `gemini` | gemini-2.0-flash (alias) |
-| `gemini-2.0-flash` | Gemini Flash |
-| `gemini-2.5-pro` | Gemini Pro |
-| `gemini-2.5-flash` | Gemini Flash 2.5 |
-
----
-
-## קבצים שנוצרים על המחשב
-
-```
-~/.config/ai-auth/
-├── config.env          ← הגדרות (paths, port)
-├── tokens.env          ← הטוקנים עצמם (chmod 600)
-└── litellm_config.yaml ← config לDocker proxy
-
-~/.local/lib/auth-token-manager/
-└── scripts/            ← עותק של הסקריפטים להרצה מcron
-```
-
----
-
-## אבטחה
-
-- `tokens.env` הוא `chmod 600` — רק המשתמש שלך יכול לקרוא
-- `.env` בפרויקטים מתווסף אוטומטית ל-`.gitignore`
-- הטוקן קשור לחשבון האישי שלך — אל תשתף
-- אם הטוקן דלף: בטל ב-claude.ai → Settings → Security, ואז `claude setup-token`
+- `tokens.env` is `chmod 600` — owner-only
+- CLIProxyAPI tokens in `~/.config/ai-auth/cliproxyapi/tokens/` — owner-only
+- `.env` files auto-added to `.gitignore` by `token-link`
+- CLIProxyAPI listens on localhost only — not exposed externally

@@ -43,9 +43,17 @@ fail()     { echo -e "  ${RED}✗${RESET} $*"; exit 1; }
 # Only .git and the script itself are excluded — everything else is copied.
 should_skip() {
   local name="$1"
-  [ "$name" = ".git" ]       && return 0
+  [ "$name" = ".git" ]         && return 0
   [ "$name" = "$THIS_SCRIPT" ] && return 0
   return 1
+}
+
+# ─── Make executable if needed ────────────────────────────────
+make_executable_if_needed() {
+  local file="$1"
+  case "$file" in
+    *.sh|*.py) chmod +x "$file" ;;
+  esac
 }
 
 # ─── Collect all files to copy (flat list: src|dst) ──────────
@@ -230,6 +238,7 @@ for pair in "${ALL_PAIRS[@]}"; do
     if [ "$decision" = "overwrite" ]; then
       mkdir -p "$(dirname "$dst")"
       cp "$src" "$dst"
+      make_executable_if_needed "$dst"
       warn "$rel_dst  ${DIM}(overwritten)${RESET}"
       OVERWRITTEN=$((OVERWRITTEN+1))
     else
@@ -239,6 +248,7 @@ for pair in "${ALL_PAIRS[@]}"; do
   else
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
+    make_executable_if_needed "$dst"
     ok "$rel_dst"
     COPIED=$((COPIED+1))
   fi
@@ -253,4 +263,5 @@ echo ""
 [ $OVERWRITTEN -gt 0 ] && echo -e "  ${YELLOW}~${RESET} $OVERWRITTEN files overwritten"
 [ $SKIPPED -gt 0 ]     && echo -e "  ${DIM}–${RESET} $SKIPPED files skipped"
 echo "  Target: $TARGET_DIR"
+echo "  Note: .sh and .py files were made executable automatically."
 echo ""

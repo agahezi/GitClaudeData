@@ -5,146 +5,201 @@ description: >
   use across multiple projects on the same machine — without paid API keys. Covers:
   first-time machine setup via interactive wizard, centralized token storage, automatic
   daily refresh via cron, Docker-based CLI proxy exposing an OpenAI-compatible endpoint,
-  and wiring any project to use the proxy. Use this skill whenever: setting up a new
-  machine, adding Claude/Gemini to an existing project, dealing with token expiry,
-  setting up CLAUDE_CODE_OAUTH_TOKEN or AI_PROXY_URL, running claude setup-token,
-  configuring a local LLM proxy, integrating proxy-setup into a project, or connecting
-  any app to Claude/Gemini without a paid API key.
+  and a CLIProxyAPI service that permanently fixes Claude Code CLI OAuth 401 errors.
+  Use this skill whenever: setting up a new machine, fixing OAuth 401 errors in Claude
+  Code CLI, adding Claude/Gemini to an existing project, dealing with token expiry,
+  setting up CLAUDE_CODE_OAUTH_TOKEN or AI_PROXY_URL or ANTHROPIC_BASE_URL, running
+  claude setup-token, configuring a local LLM proxy, or connecting any app to
+  Claude/Gemini without a paid API key.
 ---
 
 # Auth Token Manager
 
-**שני שלבים, שני כלים:**
+**Two distinct problems, two distinct solutions:**
 
-| שלב | כלי | מתי |
-|-----|-----|-----|
-| התקנה ראשונית למחשב | `scripts/install.sh` | פעם אחת לכל מחשב |
-| שילוב בפרויקט | `commands/proxy-setup.md` | לכל פרויקט בנפרד |
+| Problem | Solution | Port |
+|---------|----------|------|
+| Claude Code CLI gets 401 every few hours | CLIProxyAPI | 8317 |
+| Other apps need Claude/Gemini without API key | LiteLLM proxy | 8080 |
 
 ---
 
-## ⚡ Entry Point — תמיד התחל כאן
-
-הרץ בדיקה זו:
+## ⚡ Entry Point — Always Start Here
 
 ```bash
 python3 - << 'PYEOF'
-import json, subprocess
+import json, subprocess, os
 from pathlib import Path
 from datetime import datetime, timezone
 
-creds   = Path.home() / ".claude" / ".credentials.json"
-central = Path.home() / ".config" / "ai-auth" / "tokens.env"
+results = {}
 
+# 1. Claude Code CLI credentials
+creds = Path.home() / ".claude" / ".credentials.json"
 if not creds.exists():
-    print("STATE=NEW_MACHINE"); exit()
+    results["machine"] = "NEW"
+else:
+    try:
+        d = json.load(open(creds))
+        token = d.get("claudeAiOauth", {}).get("accessToken", "")
+        ms = d.get("claudeAiOauth", {}).get("expiresAt", 0)
+        days = (datetime.fromtimestamp(ms/1000, tz=timezone.utc)
+                - datetime.now(tz=timezone.utc)).days
+        results["machine"] = f"CONFIGURED days_left={days}"
+    except:
+        results["machine"] = "ERROR"
 
+# 2. CLIProxyAPI status
 try:
-    d     = json.load(open(creds))
-    token = d.get("claudeAiOauth", {}).get("accessToken", "")
-    if not token:
-        print("STATE=NEW_MACHINE"); exit()
-    ms        = d.get("claudeAiOauth", {}).get("expiresAt", 0)
-    days_left = (datetime.fromtimestamp(ms/1000, tz=timezone.utc)
-                 - datetime.now(tz=timezone.utc)).days
-    setup     = "YES" if central.exists() else "NO"
-    print(f"STATE=CONFIGURED DAYS_LEFT={days_left} SETUP_DONE={setup}")
-except Exception as e:
-    print(f"STATE=ERROR MSG={e}")
+    r = subprocess.run(["docker","ps","--filter","name=cliproxyapi",
+                        "--format","{{.Names}}"],
+                       capture_output=True, text=True, timeout=5)
+    results["cliproxy"] = "RUNNING" if "cliproxyapi" in r.stdout else "STOPPED"
+except:
+    results["cliproxy"] = "UNAVAILABLE"
+
+# 3. ANTHROPIC_BASE_URL
+base_url = os.environ.get("ANTHROPIC_BASE_URL", "not_set")
+results["base_url"] = base_url
+
+# 4. Central env
+central = Path.home() / ".config" / "ai-auth" / "tokens.env"
+results["central_env"] = "OK" if central.exists() else "MISSING"
+
+for k, v in results.items():
+    print(f"{k}={v}")
 PYEOF
 ```
 
-**החלטה:**
+**Decision table:**
 
-| תוצאה | פעולה |
-|-------|--------|
-| `STATE=NEW_MACHINE` | הרץ `scripts/install.sh` |
-| `STATE=CONFIGURED SETUP_DONE=NO` | הרץ `scripts/install.sh` |
-| `STATE=CONFIGURED DAYS_LEFT<7` | הרץ `token-status` + הצג התראה דחופה |
-| `STATE=CONFIGURED DAYS_LEFT>=7` | המחשב מוכן — המשך לפעולה המבוקשת |
+| Output | Action |
+|--------|--------|
+| `machine=NEW` | Run `scripts/install.sh` |
+| `cliproxy=STOPPED` | Run `cliproxy start` |
+| `cliproxy=RUNNING` but 401 errors | Run `cliproxy login` |
+| `base_url=not_set` | Run `source ~/.bashrc` or add `ANTHROPIC_BASE_URL=http://localhost:8317` |
+| Everything OK | Machine ready |
 
 ---
 
-## מחשב חדש — install.sh
+## Problem A: Claude Code CLI OAuth 401 errors
+
+**Root cause:** Claude Code CLI tokens in `~/.claude.json` expire every few hours.
+
+**Fix:** CLIProxyAPI — a persistent Docker service that intercepts CLI requests
+and handles token refresh automatically.
+
+```
+Claude Code CLI
+  (ANTHROPIC_BASE_URL=http://localhost:8317)
+        ↓
+  cliproxyapi container (always running)
+  └── auto-refreshes tokens in ~/.config/ai-auth/cliproxyapi/tokens/
+        ↓
+  Anthropic API ✓  (no more 401 errors)
+```
+
+**Setup (first time):**
+```bash
+bash ~/.claude/skills/auth-token-manager/scripts/cliproxyapi_manager.sh setup
+cliproxy login   # one-time browser auth — see SSH tunnel instructions below
+```
+
+**SSH / headless login (Termux, PC → remote server):**
+```bash
+# Step 1 — On your LOCAL machine:
+ssh -L 54545:127.0.0.1:54545 user@remote-host
+
+# Step 2 — On the REMOTE machine:
+cliproxy login
+# Opens http://localhost:54545/... → open in your LOCAL browser
+```
+
+**Daily operations:**
+```bash
+cliproxy status    # check container + token + ANTHROPIC_BASE_URL
+cliproxy logs      # debug issues
+cliproxy restart   # if container stopped
+cliproxy login     # only if token manually revoked
+```
+
+See `references/cliproxyapi.md` for full details.
+
+---
+
+## Problem B: Other apps need Claude/Gemini without API key
+
+**Fix:** LiteLLM proxy on port 8080 — exposes OpenAI-compatible endpoint.
+
+```bash
+token-proxy          # start
+token-proxy --status
+token-proxy --restart
+token-link /path/to/project   # wire a project
+```
+
+See `references/cli-proxy.md` for connection patterns.
+
+---
+
+## New Machine — install.sh
 
 ```bash
 bash ~/.claude/skills/auth-token-manager/scripts/install.sh
-# Custom path: AI_AUTH_CENTRAL_ENV=/custom/path bash install.sh
 ```
 
-ה-wizard מטפל בהכל: תלויות, טוקן, Gemini (אופציונלי), central env, cron, proxy Docker.
-**לאחר ה-wizard: המחשב מוכן. הכל אוטומטי עד פקיעה (~שנה).**
+Sets up everything: Claude token, central env, cron, LiteLLM proxy (8080),
+CLIProxyAPI (8317). After install, run `cliproxy login` once.
 
 ---
 
-## שילוב פרויקט קיים — proxy-setup
+## Token Lifecycle
 
-כאשר המשתמש מבקש לחבר פרויקט לClaude/Gemini:
-
-```
-"שלב את הproxy בפרויקט"
-"חבר את הפרויקט לClaude"
-"/proxy-setup"
-"עדכן את הקוד לעבוד עם הproxy"
-"integrate proxy into my project"
-```
-
-קרא את `commands/proxy-setup.md` ובצע את כל ה-phases לפי הסדר.
+| Token type | Stored in | Expires | Auto-refresh |
+|------------|-----------|---------|--------------|
+| Claude Code CLI OAuth | `~/.claude.json` | hours | ✅ via CLIProxyAPI |
+| claude setup-token | `~/.claude/.credentials.json` | ~1 year | ❌ manual yearly |
+| Gemini gcloud | `~/.config/gcloud/` | ~1 hour | ✅ gcloud auto |
 
 ---
 
-## מחזור חיים של טוקנים
-
-| | Claude OAuth | Gemini OAuth |
-|--|--|--|
-| תוקף | ~שנה | ~שעה |
-| silent refresh | ❌ לא קיים | ✅ gcloud אוטומטי |
-| מה הcron עושה | קורא קיים + מתריע | gcloud מחדש + proxy restart |
-| ידני נדרש | ~פעם בשנה | רק אם session פג |
-
-**חידוש שנתי:**
-```bash
-claude setup-token
-token-refresh --force
-source ~/.bashrc
-```
-
----
-
-## פקודות זמינות (לאחר install.sh)
+## All Commands
 
 ```bash
-token-status                    # סטטוס מלא
-token-refresh                   # cron logic ידני
-token-refresh --force           # כתיבה מיידית
-token-link /path/to/project     # קישור פרויקט
-token-proxy                     # start proxy
+# CLIProxyAPI (fixes 401 errors)
+cliproxy setup     # first-time setup
+cliproxy login     # one-time auth
+cliproxy start
+cliproxy stop
+cliproxy restart
+cliproxy status
+cliproxy logs
+
+# LiteLLM proxy (other apps)
+token-proxy
 token-proxy --stop
 token-proxy --restart
 token-proxy --status
 token-proxy --logs
+
+# Token management
+token-status             # Claude + Gemini + both proxies
+token-refresh
+token-refresh --force
+token-link /path/to/project
 ```
-
----
-
-## Troubleshooting
-
-| תסמין | סיבה | פתרון |
-|-------|------|--------|
-| `OAuth token revoked` | פג/בוטל | חידוש שנתי |
-| `Missing state parameter` | browser flow הופסק | Ctrl+C → retry |
-| Proxy לא עונה | container נפל | `token-proxy --restart` |
-| פרויקט לא מקבל טוקן | לא קושר | `token-link /path` |
-| טוקן ישן בshell | shell לא נטען | `source ~/.bashrc` |
 
 ---
 
 ## Reference Files
 
-- `references/claude-oauth.md` — Claude token internals
-- `references/gemini-oauth.md` — Gemini flow, auto-refresh
-- `references/cli-proxy.md` — חיבור פרויקטים לproxy
-- `scripts/install.sh` — wizard התקנה ראשונית
-- `scripts/refresh_token.py` — cron יומי
-- `scripts/proxy_manager.py` — Docker proxy lifecycle
-- `commands/proxy-setup.md` — agent לשילוב פרויקט
+- `references/cliproxyapi.md` — CLIProxyAPI full setup, SSH tunnel, troubleshooting
+- `references/cli-proxy.md` — LiteLLM proxy connection patterns
+- `references/claude-oauth.md` — claude setup-token internals
+- `references/gemini-oauth.md` — Gemini gcloud flow
+- `scripts/install.sh` — first-time machine wizard
+- `scripts/cliproxyapi_manager.sh` — CLIProxyAPI lifecycle
+- `scripts/refresh_token.py` — daily cron
+- `scripts/proxy_manager.py` — LiteLLM lifecycle
+- `commands/proxy-setup/proxy-setup.md` — agent for project integration
