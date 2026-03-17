@@ -1,55 +1,59 @@
 # Claude OAuth — Reference
 
-## Token types
+## מהות הטוקן
 
-| Command | Token validity | Use case |
-|---------|---------------|----------|
-| `claude auth login` | 8-12 hours | Interactive CLI sessions |
-| `claude setup-token` | ~1 year | Automated/headless use ← use this |
+`claude setup-token` מייצר `accessToken` בתוקף ~שנה.
+**אין silent refresh** — כשפג, חייב `claude setup-token` ידני שוב.
 
-Always use `claude setup-token` for the auth-token-manager flow.
+Token format: `sk-ant-oat01-...`
+נשמר ב: `~/.claude/.credentials.json`
 
-## First-time on remote machine (no browser)
+## הבדל מ-`claude auth login`
 
-```bash
-claude setup-token
-# Prints URL → open in your LOCAL browser → authorize
-# Terminal polls → token printed automatically (wait ~10s)
+| פקודה | תוקף | שימוש |
+|-------|------|-------|
+| `claude setup-token` | ~שנה | headless / אוטומציה ← **זה מה שאנחנו משתמשים** |
+| `claude auth login` | 8-12 שעות | sessions אינטראקטיביות בלבד |
 
-# If terminal exits before printing:
-python3 -c "
-import json
-d = json.load(open('/root/.claude/.credentials.json'))
-print(d['claudeAiOauth']['accessToken'])
-"
-```
-
-## credentials.json structure
+## credentials.json
 
 ```json
 {
   "claudeAiOauth": {
-    "accessToken":  "sk-ant-oat01-...",   // valid ~1 year
-    "refreshToken": "sk-ant-ort01-...",   // used for silent refresh
-    "expiresAt":    1748658860401          // Unix ms
+    "accessToken":  "sk-ant-oat01-...",
+    "refreshToken": "sk-ant-ort01-...",
+    "expiresAt":    1748658860401
   }
 }
 ```
 
-## Silent refresh mechanism
+> ⚠️ `refreshToken` קיים בקובץ אבל **לא פונקציונלי לחידוש שקט**.
+> Anthropic לא חשפה API לחידוש ללא browser interaction.
 
-Claude CLI auto-refreshes the accessToken before any command if it's
-near expiry, using the refreshToken. This is what `refresh_token.py`
-exploits by running `claude --version` as a no-op trigger.
+## מה הcron עושה בפועל
 
-When the refreshToken itself expires (~1 year+), silent refresh fails
-and `claude setup-token` must be run manually again.
+```
+כל יום 06:00 — refresh_token.py
+  → קורא accessToken הקיים מcredentials.json
+  → מחשב ימים לפקיעה (expiresAt)
+  → days_left ≥ 14   → כותב לcentral env, שקט
+  → days_left 7-13   → כותב + התראה בלוג
+  → days_left < 7    → כותב + התראה דחופה
+  → days_left < 0    → עוצר + הנחיות לחידוש ידני
+```
 
-## Common errors
+## חידוש שנתי
 
-| Error | Fix |
-|-------|-----|
-| `OAuth token revoked` | `token-refresh --force` or re-run `claude setup-token` |
-| `Missing state parameter` | Ctrl+C, retry — URL was opened twice |
-| `403: scope requirement` | Used wrong token — must be `setup-token` |
-| Token wraps in terminal | Paste to editor, remove newlines |
+```bash
+claude setup-token          # browser auth (~2 דקות)
+token-refresh --force       # כותב טוקן חדש לכל .env
+source ~/.bashrc            # טעינה בshell הנוכחי
+```
+
+## שגיאות נפוצות
+
+| שגיאה | סיבה | פתרון |
+|-------|------|--------|
+| `OAuth token revoked` | פג/בוטל | חידוש שנתי |
+| `Missing state parameter` | URL נפתח פעמיים | Ctrl+C → retry |
+| `403 scope error` | שימוש ב-`auth login` במקום `setup-token` | הרץ `claude setup-token` |

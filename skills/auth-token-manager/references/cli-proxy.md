@@ -1,112 +1,108 @@
 # CLI Proxy — Reference
 
-## What it does
+## מה הוא עושה
 
-Runs a LiteLLM container on `localhost:8080` that:
-- Accepts OpenAI-compatible HTTP requests
-- Authenticates with Claude/Gemini using your OAuth token
-- Returns standard OpenAI-format responses
+Docker container (LiteLLM) שמאזין על `localhost:8080`.
+מקבל OpenAI-compatible requests ומעביר לClaude/Gemini עם הטוקנים שלך.
 
-Any project can use Claude or Gemini without touching tokens directly.
+```
+הקוד שלך
+  POST localhost:8080/v1/chat/completions
+  Authorization: Bearer local
+        ↓
+  LiteLLM (ai-proxy container)
+        ↓
+  Anthropic API / Google API
+  (עם OAuth token שלך)
+```
 
-## Managed by
+## ניהול
 
 ```bash
-token-proxy             # start (default)
+token-proxy               # start
 token-proxy --stop
 token-proxy --restart
 token-proxy --status
 token-proxy --logs
-token-proxy --port 9090  # custom port
+token-proxy --port 9090   # custom port
 ```
 
-## Connecting a project
+## מודלים זמינים
 
-### Python
+| שם בבקשה | מפנה ל |
+|----------|--------|
+| `claude` | claude-sonnet-4-6 (alias) |
+| `claude-sonnet-4-6` | Claude Sonnet |
+| `claude-opus-4-6` | Claude Opus |
+| `claude-haiku-4-5` | Claude Haiku |
+| `gemini` | gemini-2.0-flash (alias) |
+| `gemini-2.0-flash` | Gemini Flash |
+| `gemini-2.5-pro` | Gemini Pro |
+| `gemini-2.5-flash` | Gemini Flash 2.5 |
+
+## חיבור פרויקטים
+
+### Python / FastAPI
 ```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="local")
-response = client.chat.completions.create(
-    model="claude",   # or "gemini", "claude-sonnet-4-6", etc.
-    messages=[{"role": "user", "content": "hello"}]
+from openai import AsyncOpenAI
+import os
+
+llm = AsyncOpenAI(
+    base_url=os.getenv("AI_PROXY_URL", "http://localhost:8080/v1"),
+    api_key="local",
 )
 ```
 
 ### TypeScript / Node
 ```typescript
 import OpenAI from 'openai'
-const client = new OpenAI({ baseURL: 'http://localhost:8080/v1', apiKey: 'local' })
+const llm = new OpenAI({
+  baseURL: process.env.AI_PROXY_URL ?? 'http://localhost:8080/v1',
+  apiKey: 'local',
+})
 ```
 
-### FastAPI (your trading system)
-```python
-# In your LLM adapter (hexagonal architecture — infra layer)
-import os
-from openai import AsyncOpenAI
-
-class ClaudeAdapter:
-    def __init__(self):
-        self._client = AsyncOpenAI(
-            base_url=os.getenv("AI_PROXY_URL", "http://localhost:8080/v1"),
-            api_key="local",
-        )
-```
-
-### Docker app connecting to proxy
+### Docker project
 ```yaml
-# docker-compose.yml
 services:
   your-app:
-    environment:
-      - AI_PROXY_URL=http://host.docker.internal:8080/v1
-      - OPENAI_API_KEY=local
+    env_file: .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      - OPENAI_BASE_URL=http://host.docker.internal:8080/v1
+      - OPENAI_API_KEY=local
 ```
 
-### OpenClaw routing through proxy
-```yaml
-# openclaw config
-providers:
-  anthropic:
-    baseUrl: "http://host.docker.internal:8080"
-    apiKey: "local"
+### curl
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## Available models
+## Proxy restart — מתי ולמה
 
-| Request model name | Routes to |
-|-------------------|-----------|
-| `claude` | claude-sonnet-4-6 (alias) |
-| `claude-sonnet-4-6` | Claude Sonnet via OAuth |
-| `claude-opus-4-6` | Claude Opus via OAuth |
-| `gemini` | gemini-2.0-flash (alias) |
-| `gemini-2.0-flash` | Gemini Flash via gcloud |
-
-## Token reload
-
-When `refresh_token.py` runs (daily cron), it:
-1. Writes fresh token to `~/.config/ai-auth/tokens.env`
-2. Calls `docker restart ai-proxy`
-3. Proxy picks up new token from the YAML config
-
-No manual intervention needed.
+| מצב | restart? | סיבה |
+|-----|----------|------|
+| Claude token חודש (שנתי) | ✅ | config נכתב מחדש עם token חדש |
+| Gemini token השתנה (יומי) | ✅ | LiteLLM צריך לטעון config מחדש |
+| Claude בתוקף, Gemini זהה | ❌ | מיותר |
 
 ## Troubleshooting
 
 ```bash
-# Proxy not responding
-token-proxy --status
+# Proxy לא עונה
 token-proxy --restart
 
-# See what's happening
+# לראות שגיאות
 token-proxy --logs
 
-# Port conflict
+# Port תפוס
 token-proxy --stop
 token-proxy --port 9090 --start
-# Update AI_PROXY_PORT in ~/.config/ai-auth/config.env
 
-# Token changed but proxy using old one
-token-refresh --force   # writes new token + restarts proxy
+# טוקן ישן בproxy אחרי חידוש שנתי
+token-refresh --force   # כותב טוקן חדש → proxy restart אוטומטי
 ```

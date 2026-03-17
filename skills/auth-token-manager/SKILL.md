@@ -3,235 +3,148 @@ name: auth-token-manager
 description: >
   Full lifecycle management of AI provider OAuth tokens (Claude, Gemini) for personal
   use across multiple projects on the same machine — without paid API keys. Covers:
-  first-time token creation, centralized storage so all projects share one token,
-  automatic daily refresh via cron, Docker-based CLI proxy that exposes an
-  OpenAI-compatible endpoint powered by your subscription, and wiring any project
-  to use the proxy with minimal config. Use this skill whenever setting up a new
-  machine, adding a new project that needs AI access, dealing with token expiry,
-  setting up CLAUDE_CODE_OAUTH_TOKEN or GEMINI_OAUTH_TOKEN, running claude setup-token,
-  configuring a local LLM proxy, or connecting an app to Claude/Gemini without
-  an Anthropic Console API key.
+  first-time machine setup via interactive wizard, centralized token storage, automatic
+  daily refresh via cron, Docker-based CLI proxy exposing an OpenAI-compatible endpoint,
+  and wiring any project to use the proxy. Use this skill whenever: setting up a new
+  machine, adding Claude/Gemini to an existing project, dealing with token expiry,
+  setting up CLAUDE_CODE_OAUTH_TOKEN or AI_PROXY_URL, running claude setup-token,
+  configuring a local LLM proxy, integrating proxy-setup into a project, or connecting
+  any app to Claude/Gemini without a paid API key.
 ---
 
 # Auth Token Manager
 
-**Goal**: One token per provider, stored centrally, refreshed automatically,
-accessible to every project via environment variables or a local HTTP proxy.
+**שני שלבים, שני כלים:**
+
+| שלב | כלי | מתי |
+|-----|-----|-----|
+| התקנה ראשונית למחשב | `scripts/install.sh` | פעם אחת לכל מחשב |
+| שילוב בפרויקט | `commands/proxy-setup.md` | לכל פרויקט בנפרד |
 
 ---
 
-## ⚡ Entry Point — Always Start Here
+## ⚡ Entry Point — תמיד התחל כאן
 
-When this skill is triggered, run this check first:
-
-```
-Is ~/.claude/.credentials.json present AND contains a valid accessToken?
-│
-├─ NO  → This is a new machine.
-│         Run: bash <skill_dir>/scripts/install.sh
-│         The wizard will guide the user step by step.
-│         Stop here — install.sh handles everything else.
-│
-└─ YES → Machine is already set up.
-          Continue to the relevant section below.
-```
-
-**As an agent, execute this check automatically:**
+הרץ בדיקה זו:
 
 ```bash
 python3 - << 'PYEOF'
-import json, sys
+import json, subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 
-creds_file = Path.home() / ".claude" / ".credentials.json"
-central_env = Path.home() / ".config" / "ai-auth" / "tokens.env"
+creds   = Path.home() / ".claude" / ".credentials.json"
+central = Path.home() / ".config" / "ai-auth" / "tokens.env"
 
-if not creds_file.exists():
-    print("NEW_MACHINE")
-    sys.exit()
+if not creds.exists():
+    print("STATE=NEW_MACHINE"); exit()
 
 try:
-    d = json.load(open(creds_file))
+    d     = json.load(open(creds))
     token = d.get("claudeAiOauth", {}).get("accessToken", "")
     if not token:
-        print("NEW_MACHINE")
-        sys.exit()
-    expires_ms = d.get("claudeAiOauth", {}).get("expiresAt", 0)
-    days_left = (datetime.fromtimestamp(expires_ms/1000, tz=timezone.utc)
+        print("STATE=NEW_MACHINE"); exit()
+    ms        = d.get("claudeAiOauth", {}).get("expiresAt", 0)
+    days_left = (datetime.fromtimestamp(ms/1000, tz=timezone.utc)
                  - datetime.now(tz=timezone.utc)).days
-    setup_done = central_env.exists()
-    print(f"CONFIGURED days_left={days_left} setup={setup_done}")
+    setup     = "YES" if central.exists() else "NO"
+    print(f"STATE=CONFIGURED DAYS_LEFT={days_left} SETUP_DONE={setup}")
 except Exception as e:
-    print(f"ERROR {e}")
+    print(f"STATE=ERROR MSG={e}")
 PYEOF
 ```
 
-**Decision based on output:**
+**החלטה:**
 
-| Output | Action |
-|--------|--------|
-| `NEW_MACHINE` | Run `install.sh` wizard |
-| `CONFIGURED days_left=N setup=True` | Machine ready — proceed to task |
-| `CONFIGURED days_left=N setup=False` | Token exists but setup incomplete — run `install.sh` |
-| `CONFIGURED days_left<7` | Token expiring soon — run `token-refresh --force` |
-
----
-
-## Architecture
-
-```
-~/.claude/.credentials.json     ← Claude CLI writes token here
-         │
-         ▼
-~/.claude/skills/auth-token-manager/config/tokens.env    ← central store (chmod 600)
-         │                         auto-sourced in every shell
-         │
-         ├── Project A .env     ← linked via token-link
-         ├── Project B .env     ← linked via token-link
-         │
-         ▼
-   Docker: ai-proxy             ← localhost:8080
-   OpenAI-compatible endpoint
-   powered by your subscription
-```
+| תוצאה | פעולה |
+|-------|--------|
+| `STATE=NEW_MACHINE` | הרץ `scripts/install.sh` |
+| `STATE=CONFIGURED SETUP_DONE=NO` | הרץ `scripts/install.sh` |
+| `STATE=CONFIGURED DAYS_LEFT<7` | הרץ `token-status` + הצג התראה דחופה |
+| `STATE=CONFIGURED DAYS_LEFT>=7` | המחשב מוכן — המשך לפעולה המבוקשת |
 
 ---
 
-## New Machine — install.sh
-
-The install wizard runs interactively and handles everything:
+## מחשב חדש — install.sh
 
 ```bash
-# Locate the skill directory, then:
-unzip auth-token-manager.skill -d ~/.claude/skills/
 bash ~/.claude/skills/auth-token-manager/scripts/install.sh
-
-# Custom central token path:
-AI_AUTH_CENTRAL_ENV=/custom/path/tokens.env bash install.sh
+# Custom path: AI_AUTH_CENTRAL_ENV=/custom/path bash install.sh
 ```
 
-**What the wizard does, step by step:**
-
-| Step | What happens | Manual/Auto |
-|------|-------------|-------------|
-| 1 | Checks python3, Node.js, Claude CLI, Docker. Installs missing ones with your permission. | Semi-auto |
-| 2 | Detects existing token or runs `claude setup-token`. Guides browser auth. | Manual (browser) |
-| 3 | Optionally sets up Gemini via `gcloud auth login`. | Optional |
-| 4 | Creates central env, wires shell, installs cron, starts Docker proxy. | Fully auto |
-
-After the wizard completes, the machine is fully operational.
-**No further manual steps needed until token expiry (~1 year).**
+ה-wizard מטפל בהכל: תלויות, טוקן, Gemini (אופציונלי), central env, cron, proxy Docker.
+**לאחר ה-wizard: המחשב מוכן. הכל אוטומטי עד פקיעה (~שנה).**
 
 ---
 
-## Existing Machine — Day-to-Day Operations
+## שילוב פרויקט קיים — proxy-setup
 
-### Check status
-```bash
-token-status
+כאשר המשתמש מבקש לחבר פרויקט לClaude/Gemini:
+
+```
+"שלב את הproxy בפרויקט"
+"חבר את הפרויקט לClaude"
+"/proxy-setup"
+"עדכן את הקוד לעבוד עם הproxy"
+"integrate proxy into my project"
 ```
 
-### Refresh token manually
+קרא את `commands/proxy-setup.md` ובצע את כל ה-phases לפי הסדר.
+
+---
+
+## מחזור חיים של טוקנים
+
+| | Claude OAuth | Gemini OAuth |
+|--|--|--|
+| תוקף | ~שנה | ~שעה |
+| silent refresh | ❌ לא קיים | ✅ gcloud אוטומטי |
+| מה הcron עושה | קורא קיים + מתריע | gcloud מחדש + proxy restart |
+| ידני נדרש | ~פעם בשנה | רק אם session פג |
+
+**חידוש שנתי:**
 ```bash
+claude setup-token
 token-refresh --force
-```
-
-### Wire a new project
-```bash
-token-link /path/to/project
-```
-
-Adds `CLAUDE_CODE_OAUTH_TOKEN` and `AI_PROXY_URL` to the project `.env`,
-adds `.env` to `.gitignore`, and keeps it synced on every refresh.
-
-### Proxy operations
-```bash
-token-proxy               # start
-token-proxy --status      # check
-token-proxy --restart     # restart
-token-proxy --logs        # tail logs
+source ~/.bashrc
 ```
 
 ---
 
-## Connecting a Project to the Proxy
-
-**Python / FastAPI:**
-```python
-from openai import AsyncOpenAI
-import os
-
-client = AsyncOpenAI(
-    base_url=os.getenv("AI_PROXY_URL", "http://localhost:8080/v1"),
-    api_key="local",
-)
-```
-
-**TypeScript / Node:**
-```typescript
-import OpenAI from 'openai'
-const client = new OpenAI({
-  baseURL: process.env.AI_PROXY_URL ?? 'http://localhost:8080/v1',
-  apiKey: 'local',
-})
-```
-
-**Docker project (docker-compose):**
-```yaml
-services:
-  your-app:
-    environment:
-      - AI_PROXY_URL=http://host.docker.internal:8080/v1
-      - OPENAI_API_KEY=local
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
-
-**Available model names via proxy:**
-
-| Name in request | Routes to |
-|----------------|-----------|
-| `claude` | claude-sonnet-4-6 (alias) |
-| `claude-sonnet-4-6` | Claude Sonnet |
-| `claude-opus-4-6` | Claude Opus |
-| `gemini` | gemini-2.0-flash (alias) |
-| `gemini-2.0-flash` | Gemini Flash |
-
----
-
-## Annual Token Renewal (~once/year)
-
-When `install.sh` is already set up and only the token needs renewal:
+## פקודות זמינות (לאחר install.sh)
 
 ```bash
-claude setup-token        # browser auth — ~2 min
-token-refresh --force     # writes fresh token everywhere + restarts proxy
-source ~/.bashrc          # reload current shell
+token-status                    # סטטוס מלא
+token-refresh                   # cron logic ידני
+token-refresh --force           # כתיבה מיידית
+token-link /path/to/project     # קישור פרויקט
+token-proxy                     # start proxy
+token-proxy --stop
+token-proxy --restart
+token-proxy --status
+token-proxy --logs
 ```
-
-That's it. All projects pick up the new token automatically.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `OAuth token revoked` | Expired/revoked | Annual renewal above |
-| `Missing state parameter` | Browser flow interrupted | Ctrl+C → retry `claude setup-token` |
-| Proxy not responding | Container stopped | `token-proxy --restart` |
-| Project missing token after refresh | .env not updated | `token-link /path/to/project` |
-| Token stale in current shell | Shell not reloaded | `source ~/.bashrc` |
-| `NEW_MACHINE` on existing machine | credentials.json missing | Run `install.sh` |
+| תסמין | סיבה | פתרון |
+|-------|------|--------|
+| `OAuth token revoked` | פג/בוטל | חידוש שנתי |
+| `Missing state parameter` | browser flow הופסק | Ctrl+C → retry |
+| Proxy לא עונה | container נפל | `token-proxy --restart` |
+| פרויקט לא מקבל טוקן | לא קושר | `token-link /path` |
+| טוקן ישן בshell | shell לא נטען | `source ~/.bashrc` |
 
 ---
 
 ## Reference Files
 
-- `references/cli-proxy.md` — Proxy details, all connection patterns
-- `references/claude-oauth.md` — Token internals, edge cases
+- `references/claude-oauth.md` — Claude token internals
 - `references/gemini-oauth.md` — Gemini flow, auto-refresh
-- `scripts/install.sh` — Interactive first-time wizard
-- `scripts/refresh_token.py` — Token refresh + central env writer + project linker
+- `references/cli-proxy.md` — חיבור פרויקטים לproxy
+- `scripts/install.sh` — wizard התקנה ראשונית
+- `scripts/refresh_token.py` — cron יומי
 - `scripts/proxy_manager.py` — Docker proxy lifecycle
+- `commands/proxy-setup.md` — agent לשילוב פרויקט

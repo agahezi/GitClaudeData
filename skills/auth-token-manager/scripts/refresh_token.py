@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
 auth-token-manager — refresh_token.py
-Refreshes Claude OAuth token and writes to central tokens.env.
+
+Claude OAuth:
+  - accessToken תקף ~שנה, אין silent refresh
+  - קורא טוקן קיים, מתריע לפני פקיעה, כותב לcentral env
+  - לא מנסה לחדש אוטומטית — חידוש דורש claude setup-token ידני
+
+Gemini OAuth:
+  - accessToken תקף ~שעה, gcloud מחדש אוטומטית
+  - מריץ gcloud auth print-access-token בכל ריצה
+  - מבצע docker restart רק אם הטוקן השתנה
 
 Commands:
-  (default)        Check expiry → refresh if needed → write to central env
-  --force          Force refresh regardless of expiry
-  --status         Print status only, no changes
-  --link <dir>     Wire a project directory to the central token store
-  --init           First-time setup (called by install.sh)
+  (default)     בדיקה + כתיבה לcentral env
+  --force       כתיבה מיידית גם אם הכל תקין
+  --status      הצגת סטטוס בלי שינויים
+  --link <dir>  קישור תיקיית פרויקט לcentral store
 """
 
 import json
@@ -16,14 +24,16 @@ import os
 import sys
 import subprocess
 import argparse
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ─── Config ───────────────────────────────────────────────────────────────────
+WARN_DAYS  = 14
+ALERT_DAYS = 7
+
+# ─── Config ───────────────────────────────────────────────────
 
 def load_config() -> dict:
-    config_file = Path.home() / ".claude" / "skills" / "auth-token-manager" / "config" / "config.env"
+    config_file = Path.home() / ".config" / "ai-auth" / "config.env"
     cfg = {}
     if config_file.exists():
         for line in config_file.read_text().splitlines():
@@ -31,71 +41,102 @@ def load_config() -> dict:
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 cfg[k.strip()] = v.strip().strip('"').strip("'")
-
     return {
         "central_env": Path(os.environ.get("AI_AUTH_CENTRAL_ENV",
                             cfg.get("AI_AUTH_CENTRAL_ENV",
-                            Path.home() / ".claude" / "skills" / "auth-token-manager" / "config" / "tokens.env"))),
+                            Path.home() / ".config" / "ai-auth" / "tokens.env"))),
         "credentials": Path(os.environ.get("CLAUDE_CREDENTIALS_PATH",
                             cfg.get("CLAUDE_CREDENTIALS_PATH",
                             Path.home() / ".claude" / ".credentials.json"))),
-        "refresh_days": int(os.environ.get("AI_AUTH_REFRESH_DAYS",
-                            cfg.get("AI_AUTH_REFRESH_DAYS", 7))),
-        "proxy_port":   int(cfg.get("AI_PROXY_PORT", 8080)),
+        "proxy_port":  int(cfg.get("AI_PROXY_PORT", 8080)),
     }
 
-# ─── Token Reading ────────────────────────────────────────────────────────────
+# ─── Claude ───────────────────────────────────────────────────
 
-def read_credentials(path: Path) -> dict:
-    if not path.exists():
-        return {}
+def get_claude_status(credentials_path: Path) -> dict:
+    """
+    קורא את הטוקן הקיים ומחשב ימים לפקיעה.
+    לא מנסה silent refresh — Claude OAuth אין מנגנון כזה.
+    """
+    if not credentials_path.exists():
+        return {"state": "missing", "token": None, "days_left": None, "expires_at": None}
     try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
+        d     = json.loads(credentials_path.read_text())
+        oauth = d.get("claudeAiOauth", {})
+        token = oauth.get("accessToken")
+        if not token:
+            return {"state": "missing", "token": None, "days_left": None, "expires_at": None}
 
-def get_status(creds: dict) -> dict:
-    oauth = creds.get("claudeAiOauth", {})
-    if not oauth or not oauth.get("accessToken"):
-        return {"state": "missing"}
+        expires_ms = oauth.get("expiresAt", 0)
+        expires_at = datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
+        days_left  = (expires_at - datetime.now(tz=timezone.utc)).days
 
-    expires_ms = oauth.get("expiresAt", 0)
-    expires_at = datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc)
-    days_left  = (expires_at - datetime.now(tz=timezone.utc)).days
+        if days_left < 0:
+            state = "expired"
+        elif days_left <= ALERT_DAYS:
+            state = "alert"
+        elif days_left <= WARN_DAYS:
+            state = "warning"
+        else:
+            state = "valid"
 
-    return {
-        "state":         "expired" if days_left < 0 else ("expiring_soon" if days_left < 7 else "valid"),
-        "token":         oauth["accessToken"],
-        "refresh_token": oauth.get("refreshToken"),
-        "expires_at":    expires_at.strftime("%Y-%m-%d %H:%M UTC"),
-        "days_left":     days_left,
-    }
+        return {
+            "state":      state,
+            "token":      token,
+            "expires_at": expires_at.strftime("%Y-%m-%d"),
+            "days_left":  days_left,
+        }
+    except Exception as e:
+        return {"state": "error", "token": None, "days_left": None, "error": str(e)}
 
-# ─── Token Refresh ────────────────────────────────────────────────────────────
+def print_claude_warning(status: dict):
+    days = status.get("days_left", "?")
+    exp  = status.get("expires_at", "?")
+    if status["state"] == "expired":
+        print("")
+        print("╔══════════════════════════════════════════════════════╗")
+        print("║         ✗  CLAUDE TOKEN EXPIRED                      ║")
+        print("╠══════════════════════════════════════════════════════╣")
+        print("║  הרץ:                                                 ║")
+        print("║    claude setup-token                                 ║")
+        print("║    token-refresh --force                              ║")
+        print("╚══════════════════════════════════════════════════════╝")
+    elif status["state"] == "alert":
+        print(f"  ⚠  CLAUDE TOKEN — {days} ימים לפקיעה ({exp})")
+        print(f"     פעולה נדרשת בקרוב: claude setup-token && token-refresh --force")
+    elif status["state"] == "warning":
+        print(f"  ·  CLAUDE TOKEN — {days} ימים לפקיעה ({exp})")
+        print(f"     תזכורת: חידוש ידני נדרש לפני {exp}")
 
-def trigger_refresh() -> bool:
-    """Ask Claude CLI to refresh the token by running a lightweight command."""
+# ─── Gemini ───────────────────────────────────────────────────
+
+def get_gemini_token() -> dict:
+    """
+    מקבל טוקן Gemini טרי דרך gcloud.
+    gcloud מחדש אוטומטית אם הטוקן הנוכחי פג.
+    """
     try:
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True, text=True, timeout=30
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-def get_gemini_token() -> str:
-    """Get current Gemini token from gcloud."""
-    try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["gcloud", "auth", "print-access-token"],
             capture_output=True, text=True, timeout=15
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return ""
+        if r.returncode == 0 and r.stdout.strip():
+            return {"state": "valid", "token": r.stdout.strip()}
+        return {"state": "session_expired", "error": r.stderr.strip()}
+    except FileNotFoundError:
+        return {"state": "not_installed"}
+    except subprocess.TimeoutExpired:
+        return {"state": "timeout"}
 
-# ─── Central env ─────────────────────────────────────────────────────────────
+def print_gemini_warning(g: dict):
+    if g["state"] == "session_expired":
+        print("  ⚠  GEMINI SESSION פג — הרץ: gcloud auth login")
+    elif g["state"] == "not_installed":
+        print("  ·  gcloud לא מותקן — Gemini לא זמין")
+    elif g["state"] == "timeout":
+        print("  ⚠  gcloud timeout — Gemini לא עודכן בריצה זו")
+
+# ─── Central env ─────────────────────────────────────────────
 
 def read_env_file(path: Path) -> dict:
     if not path.exists():
@@ -111,8 +152,7 @@ def read_env_file(path: Path) -> dict:
 def write_central_env(path: Path, updates: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = read_env_file(path)
-    existing.update({k: v for k, v in updates.items() if v})  # skip empty values
-
+    existing.update({k: v for k, v in updates.items() if v})
     lines = [
         "# AI Provider Tokens — managed by auth-token-manager",
         f"# Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -121,173 +161,174 @@ def write_central_env(path: Path, updates: dict):
     ]
     for k, v in existing.items():
         lines.append(f'{k}="{v}"')
-
     path.write_text("\n".join(lines) + "\n")
     path.chmod(0o600)
 
-def notify_proxy_reload(port: int):
-    """Signal proxy container to reload token from env."""
+def restart_proxy_if_gemini_changed(port: int, old_token: str, new_token: str):
+    """מריץ docker restart רק אם טוקן Gemini השתנה."""
+    if not new_token or old_token == new_token:
+        return
     try:
-        subprocess.run(
-            ["docker", "restart", "ai-proxy"],
-            capture_output=True, timeout=15
-        )
+        subprocess.run(["docker", "restart", "ai-proxy"],
+                       capture_output=True, timeout=15)
+        print("[OK] Proxy restarted — Gemini token updated")
     except Exception:
-        pass  # proxy reload is best-effort
+        pass
 
-# ─── Project linking ──────────────────────────────────────────────────────────
+# ─── Project linking ──────────────────────────────────────────
 
 def link_project(project_dir: str, cfg: dict):
-    project = Path(project_dir).resolve()
+    project  = Path(project_dir).resolve()
     if not project.exists():
         print(f"[ERROR] Directory not found: {project}")
         sys.exit(1)
 
-    central_env = cfg["central_env"]
-    env_file    = project / ".env"
-    gitignore   = project / ".gitignore"
+    env_file  = project / ".env"
+    gitignore = project / ".gitignore"
+    port      = cfg["proxy_port"]
 
-    # Read current token
-    creds  = read_credentials(cfg["credentials"])
-    status = get_status(creds)
-    token  = status.get("token", "")
+    claude_s = get_claude_status(cfg["credentials"])
+    token    = claude_s.get("token", "")
 
-    # Write or update .env
-    marker = "CLAUDE_CODE_OAUTH_TOKEN="
+    new_lines = []
     if env_file.exists():
-        lines   = env_file.read_text().splitlines()
-        updated = False
-        new_lines = []
-        for line in lines:
-            if line.startswith(marker):
-                new_lines.append(f'{marker}"{token}"')
-                updated = True
+        found_claude = False
+        found_proxy  = False
+        for line in env_file.read_text().splitlines():
+            if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+                new_lines.append(f'CLAUDE_CODE_OAUTH_TOKEN="{token}"')
+                found_claude = True
+            elif line.startswith("AI_PROXY_URL="):
+                new_lines.append(f'AI_PROXY_URL="http://localhost:{port}/v1"')
+                found_proxy = True
             else:
                 new_lines.append(line)
-        if not updated:
-            new_lines += [
-                "",
-                f"# AI tokens — central store: {central_env}",
-                f'{marker}"{token}"',
-                f'AI_PROXY_URL="http://localhost:{cfg["proxy_port"]}/v1"',
-            ]
-        env_file.write_text("\n".join(new_lines) + "\n")
+        if not found_claude:
+            new_lines += ["", f'CLAUDE_CODE_OAUTH_TOKEN="{token}"']
+        if not found_proxy:
+            new_lines += [f'AI_PROXY_URL="http://localhost:{port}/v1"']
     else:
-        env_file.write_text(
-            f"# AI tokens — managed by auth-token-manager\n"
-            f"# Central store: {central_env}\n"
-            f'{marker}"{token}"\n'
-            f'AI_PROXY_URL="http://localhost:{cfg["proxy_port"]}/v1"\n'
-        )
+        new_lines = [
+            "# AI tokens — managed by auth-token-manager",
+            f"# Central store: {cfg['central_env']}",
+            f'CLAUDE_CODE_OAUTH_TOKEN="{token}"',
+            f'AI_PROXY_URL="http://localhost:{port}/v1"',
+        ]
 
-    # Ensure .gitignore has .env
-    gitignore_content = gitignore.read_text() if gitignore.exists() else ""
-    if ".env" not in gitignore_content:
+    env_file.write_text("\n".join(new_lines) + "\n")
+
+    gi_content = gitignore.read_text() if gitignore.exists() else ""
+    if ".env" not in gi_content:
         with gitignore.open("a") as f:
             f.write("\n# AI tokens\n.env\n.env.local\n")
-        print(f"[OK] Added .env to .gitignore")
+        print("[OK] .env added to .gitignore")
 
-    print(f"[OK] Project linked: {project}")
-    print(f"     .env written with current token")
-    print(f"     Proxy URL: http://localhost:{cfg['proxy_port']}/v1")
-    print(f"\n     Use in code:")
-    print(f"       Python:     load_dotenv() then os.environ['CLAUDE_CODE_OAUTH_TOKEN']")
-    print(f"       Proxy:      OpenAI(base_url='http://localhost:{cfg['proxy_port']}/v1', api_key='local')")
-    print(f"       Docker app: OPENAI_BASE_URL=http://host.docker.internal:{cfg['proxy_port']}/v1")
+    print(f"[OK] Project linked: {project.name}")
+    print(f"     CLAUDE_CODE_OAUTH_TOKEN + AI_PROXY_URL written to .env")
+    print(f"\n     Python:  AsyncOpenAI(base_url=os.getenv('AI_PROXY_URL'), api_key='local')")
+    print(f"     Docker:  http://host.docker.internal:{port}/v1")
 
-# ─── Commands ────────────────────────────────────────────────────────────────
+# ─── Commands ────────────────────────────────────────────────
 
 def cmd_status(cfg: dict):
-    creds  = read_credentials(cfg["credentials"])
-    status = get_status(creds)
-    central = cfg["central_env"]
+    claude_s = get_claude_status(cfg["credentials"])
+    gemini_s = get_gemini_token()
+    central  = cfg["central_env"]
 
-    state_icon = {"valid": "✓", "expiring_soon": "⚠", "expired": "✗", "missing": "✗"}
+    icon = {"valid": "✓", "warning": "·", "alert": "⚠", "expired": "✗",
+            "missing": "✗", "error": "✗"}
 
-    print(f"\n{'─'*52}")
+    print(f"\n{'─'*56}")
     print(f"  Auth Token Status")
-    print(f"{'─'*52}")
-    print(f"  State:        {state_icon.get(status['state'], '?')} {status['state'].upper()}")
-    if status.get("days_left") is not None:
-        print(f"  Days left:    {status['days_left']}")
-        print(f"  Expires:      {status['expires_at']}")
-    token = status.get("token", "")
-    print(f"  Token:        {'...' + token[-12:] if token else 'NONE'}")
-    print(f"  Central env:  {central} ({'✓' if central.exists() else '✗ missing'})")
-    print(f"  Proxy:        http://localhost:{cfg['proxy_port']}/v1")
-    # Check proxy
+    print(f"{'─'*56}")
+
+    ci = icon.get(claude_s["state"], "?")
+    print(f"  Claude:  {ci} {claude_s['state'].upper()}", end="")
+    if claude_s.get("days_left") is not None:
+        print(f"  ({claude_s['days_left']} days — expires {claude_s['expires_at']})", end="")
+    print()
+    t = claude_s.get("token") or ""
+    print(f"           token: {'...' + t[-12:] if t else 'NONE'}")
+
+    gi = "✓" if gemini_s["state"] == "valid" else "✗"
+    gt = gemini_s.get("token", "")
+    print(f"  Gemini:  {gi} {gemini_s['state'].upper()}", end="")
+    if gt:
+        print(f"  (...{gt[-8:]})", end="")
+    print()
+
+    print(f"  Central: {'✓' if central.exists() else '✗ missing'}  {central}")
+
     try:
-        result = subprocess.run(["docker", "ps", "--filter", "name=ai-proxy", "--format", "{{.Status}}"],
-                                capture_output=True, text=True, timeout=5)
-        proxy_status = result.stdout.strip() or "not running"
+        r = subprocess.run(
+            ["docker", "ps", "--filter", "name=ai-proxy", "--format", "{{.Status}}"],
+            capture_output=True, text=True, timeout=5)
+        proxy_s = r.stdout.strip() or "not running"
     except Exception:
-        proxy_status = "docker not available"
-    print(f"  Proxy status: {proxy_status}")
-    print(f"{'─'*52}\n")
+        proxy_s = "docker unavailable"
+    print(f"  Proxy:   {proxy_s}  → http://localhost:{cfg['proxy_port']}/v1")
+    print(f"{'─'*56}\n")
+
+    if claude_s["state"] not in ("valid", "warning"):
+        print_claude_warning(claude_s)
+    elif claude_s["state"] == "warning":
+        print_claude_warning(claude_s)
+    if gemini_s["state"] != "valid":
+        print_gemini_warning(gemini_s)
 
 def cmd_refresh(cfg: dict, force: bool = False):
-    creds  = read_credentials(cfg["credentials"])
-    status = get_status(creds)
+    claude_s = get_claude_status(cfg["credentials"])
+    central  = cfg["central_env"]
 
-    print(f"[INFO] Token: {status['state']} ({status.get('days_left', '?')} days left)")
+    # ── Claude ────────────────────────────────────────────────
+    print(f"[Claude] {claude_s['state'].upper()}", end="")
+    if claude_s.get("days_left") is not None:
+        print(f" — {claude_s['days_left']} days left", end="")
+    print()
 
-    should_refresh = (
-        force
-        or status["state"] in ("missing", "expired", "expiring_soon")
-        or (isinstance(status.get("days_left"), int) and status["days_left"] <= cfg["refresh_days"])
+    if claude_s["state"] == "missing":
+        print("[ERROR] אין טוקן Claude. הרץ: claude setup-token")
+        sys.exit(1)
+
+    if claude_s["state"] == "expired":
+        print_claude_warning(claude_s)
+        sys.exit(1)
+
+    if claude_s["state"] in ("warning", "alert"):
+        print_claude_warning(claude_s)
+
+    # ── Gemini ────────────────────────────────────────────────
+    old_env    = read_env_file(central)
+    old_gemini = old_env.get("GEMINI_OAUTH_TOKEN", "")
+
+    gemini_s = get_gemini_token()
+    updates  = {"CLAUDE_CODE_OAUTH_TOKEN": claude_s["token"]}
+
+    if gemini_s["state"] == "valid":
+        updates["GEMINI_OAUTH_TOKEN"] = gemini_s["token"]
+        changed = gemini_s["token"] != old_gemini
+        print(f"[Gemini] valid — token {'changed' if changed else 'unchanged'}")
+    else:
+        print_gemini_warning(gemini_s)
+
+    # ── Write ─────────────────────────────────────────────────
+    write_central_env(central, updates)
+    print(f"[OK] Written to {central}")
+
+    restart_proxy_if_gemini_changed(
+        cfg["proxy_port"], old_gemini,
+        updates.get("GEMINI_OAUTH_TOKEN", "")
     )
 
-    if not should_refresh:
-        print(f"[OK] Token valid for {status['days_left']} more days — no refresh needed.")
-        # Ensure central env exists even if no refresh needed
-        if not cfg["central_env"].exists() and status.get("token"):
-            write_central_env(cfg["central_env"], {"CLAUDE_CODE_OAUTH_TOKEN": status["token"]})
-            print(f"[OK] Written to central env (first time).")
-        return
+    print(f"\n     source ~/.bashrc  (לטעינה בshell הנוכחי)")
 
-    if status["state"] == "missing":
-        print("[ERROR] No token found.")
-        print("        Run 'claude setup-token' in your terminal to authenticate.")
-        sys.exit(1)
-
-    print("[INFO] Refreshing via Claude CLI...")
-    ok = trigger_refresh()
-    if not ok and status["state"] == "expired":
-        print("[ERROR] Token expired and CLI refresh failed.")
-        print("        Run 'claude setup-token' to re-authenticate (~5 min).")
-        sys.exit(1)
-
-    time.sleep(1)
-    fresh_creds = read_credentials(cfg["credentials"])
-    fresh_token = fresh_creds.get("claudeAiOauth", {}).get("accessToken", "")
-
-    if not fresh_token:
-        print("[ERROR] Could not read refreshed token from credentials file.")
-        sys.exit(1)
-
-    # Also try Gemini
-    gemini_token = get_gemini_token()
-
-    # Write to central env
-    updates = {"CLAUDE_CODE_OAUTH_TOKEN": fresh_token}
-    if gemini_token:
-        updates["GEMINI_OAUTH_TOKEN"] = gemini_token
-
-    write_central_env(cfg["central_env"], updates)
-    print(f"[OK] Token refreshed → written to {cfg['central_env']}")
-
-    # Reload proxy
-    notify_proxy_reload(cfg["proxy_port"])
-    print(f"[OK] Proxy signaled to reload")
-    print(f"\n     Run: source ~/.bashrc  (to reload in current shell)")
-
-# ─── Entry point ─────────────────────────────────────────────────────────────
+# ─── Entry point ─────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Auth Token Manager")
-    parser.add_argument("--force",  action="store_true", help="Force refresh now")
-    parser.add_argument("--status", action="store_true", help="Show status only")
-    parser.add_argument("--link",   metavar="DIR",       help="Link a project to central store")
+    parser.add_argument("--force",  action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--link",   metavar="DIR")
     args = parser.parse_args()
 
     cfg = load_config()

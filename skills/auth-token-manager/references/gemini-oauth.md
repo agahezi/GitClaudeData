@@ -1,34 +1,53 @@
 # Gemini OAuth — Reference
 
-## First-time setup
+## מהות הטוקן
+
+Google OAuth סטנדרטי דרך gcloud CLI.
+**gcloud מחדש אוטומטית** בכל קריאה ל-`gcloud auth print-access-token`.
+
+Token format: `ya29...` | תוקף: ~שעה | חידוש: אוטומטי
+
+## הבדל מClaude
+
+| | Claude | Gemini |
+|--|--------|--------|
+| תוקף | ~שנה | ~שעה |
+| silent refresh | ❌ | ✅ gcloud |
+| מה הcron עושה | קורא קיים | מייצר טרי |
+| proxy restart | לא (טוקן לא משתנה תדיר) | רק אם השתנה |
+
+## הגדרה ראשונית
 
 ```bash
 curl https://sdk.cloud.google.com | bash && exec -l $SHELL
 gcloud auth login
 gcloud auth application-default login
-gcloud auth print-access-token   # verify
+gcloud auth print-access-token   # אימות
 ```
 
-## Token characteristics
+## מה הcron עושה
 
-- Valid ~1 hour (short-lived)
-- Auto-refreshes via gcloud when you call `gcloud auth print-access-token`
-- `refresh_token.py` calls this before writing to `tokens.env`
-
-## In tokens.env
-
-```bash
-GEMINI_OAUTH_TOKEN=""   # populated by refresh_token.py if gcloud is available
+```
+כל יום 06:00
+  → gcloud auth print-access-token  (מחדש אוטומטית אם פג)
+  → השווה לטוקן הנוכחי בcentral env
+  → השתנה → כותב + docker restart
+  → לא השתנה → כלום
+  → gcloud נכשל → התראה בלוג, לא עוצר
 ```
 
-## Troubleshooting
+## שחזור session פג
 
 ```bash
-# Re-authenticate if session expired
 gcloud auth revoke
 gcloud auth login
 gcloud auth application-default login
-
-# Verify
-gcloud auth list   # should show ACTIVE account
 ```
+
+## שגיאות נפוצות
+
+| שגיאה בסטטוס | סיבה | פתרון |
+|--------------|------|--------|
+| `session_expired` | session Google פג | `gcloud auth login` |
+| `not_installed` | gcloud לא מותקן | התקנה מחדש |
+| `timeout` | בעיית רשת | בדוק חיבור |
