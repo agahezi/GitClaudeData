@@ -344,9 +344,17 @@ fi
 section 5 "CLIProxyAPI Login + Final Verification"
 
 if [ "$HAS_DOCKER" = true ]; then
-  echo "  This is the final one-time step."
-  echo "  After this, Claude Code CLI will never get a 401 error again."
-  echo ""
+  # Check if CLIProxyAPI already has tokens — skip login if so
+  TOKEN_DIR="$HOME/.config/ai-auth/cliproxyapi/tokens"
+  TOKEN_COUNT=$(find "$TOKEN_DIR" -name "*.json" 2>/dev/null | wc -l | tr -d ' ')
+
+  if [ "$TOKEN_COUNT" -gt 0 ]; then
+    ok "CLIProxyAPI already has $TOKEN_COUNT token(s) — skipping login."
+    echo ""
+  else
+    echo "  This is the final one-time step."
+    echo "  After this, Claude Code CLI will never get a 401 error again."
+    echo ""
 
   # Detect SSH session
   if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
@@ -386,6 +394,7 @@ if [ "$HAS_DOCKER" = true ]; then
   echo ""
 
   bash "$INSTALL_DIR/scripts/cliproxyapi_manager.sh" login
+  fi  # end else (no existing tokens)
 
   # ── Final verification ────────────────────────────────────
   echo ""
@@ -398,17 +407,23 @@ if [ "$HAS_DOCKER" = true ]; then
   export ANTHROPIC_BASE_URL="http://localhost:8317"
   export ANTHROPIC_AUTH_TOKEN="sk-dummy"
 
-  TEST_RESULT=$(claude --print "Reply with exactly: OK" 2>&1 | tail -1)
+  TEST_OUTPUT=$(claude --print "Reply with one word: OK" 2>&1)
+  TEST_EXIT=$?
 
-  if echo "$TEST_RESULT" | grep -qi "ok"; then
+  if echo "$TEST_OUTPUT" | grep -qi "^ok"; then
     ok "Claude responded successfully — no 401 errors!"
     echo ""
     echo -e "  ${GREEN}${BOLD}Everything is working end-to-end.${RESET}"
+  elif echo "$TEST_OUTPUT" | grep -q "529\|overloaded"; then
+    warn "Anthropic servers are temporarily overloaded (529)."
+    ok "Auth is working correctly — try claude again in a few minutes."
+  elif echo "$TEST_OUTPUT" | grep -q "401\|authentication"; then
+    warn "Auth error — run: cliproxy login"
+  elif echo "$TEST_OUTPUT" | grep -q "refused\|502\|503"; then
+    warn "Proxy not reachable — run: cliproxy start"
   else
-    warn "Test response: $TEST_RESULT"
-    echo ""
-    echo "  If you see a 401 — run: cliproxy login"
-    echo "  If you see connection refused — run: cliproxy start"
+    warn "Unexpected response: $TEST_OUTPUT"
+    echo "  Run manually to verify: claude "hello""
   fi
 else
   warn "Docker not available — skipping CLIProxyAPI login and verification."

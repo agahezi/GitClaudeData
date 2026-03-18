@@ -78,6 +78,10 @@ request-retry: 3
 debug: false
 logging-to-file: false
 
+# Enable Claude Code OAuth provider
+claude:
+  enable: true
+
 # No API key protection — localhost only
 auth:
   providers: []
