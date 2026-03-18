@@ -183,6 +183,13 @@ cmd_start() {
   # Case 4: port is free — start normally
   [ ! -f "$CONFIG_FILE" ] && write_config
 
+  # Ensure shared-proxy network exists
+  if ! docker network inspect shared-proxy >/dev/null 2>&1; then
+    info "Creating shared-proxy Docker network..."
+    docker network create shared-proxy >/dev/null
+    ok "Network 'shared-proxy' created."
+  fi
+
   info "Pulling latest image..."
   docker pull "$IMAGE" --quiet
 
@@ -190,6 +197,8 @@ cmd_start() {
   docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
+    --network shared-proxy \
+    --network-alias cli-proxy-api \
     -p "${API_PORT}:8317" \
     -p "${LOGIN_PORT}:54545" \
     -v "$CONFIG_FILE:/CLIProxyAPI/config.yaml:ro" \

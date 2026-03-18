@@ -164,6 +164,40 @@ python3 ~/.local/lib/auth-token-manager/scripts/refresh_token.py --link "$PWD"
 
 Confirms `.env` was created/updated with `CLAUDE_CODE_OAUTH_TOKEN` and `AI_PROXY_URL`.
 
+### 1e. Detect if project runs in Docker
+
+```bash
+[ -f docker-compose.yml ] && echo "DOCKER_PROJECT=true" || echo "DOCKER_PROJECT=false"
+```
+
+**Set proxy URL based on context:**
+
+| Context | URL to use |
+|---------|-----------|
+| Host / Claude CLI | `http://localhost:8317/v1` |
+| Docker container | `http://cli-proxy-api:8317/v1` |
+
+**If DOCKER_PROJECT=true** — add `shared-proxy` network to `docker-compose.yml`:
+
+```yaml
+services:
+  your-app:
+    environment:
+      - AI_PROXY_URL=http://cli-proxy-api:8317/v1
+      - OPENAI_API_KEY=local
+    networks:
+      - shared-proxy
+      - default          # keep existing network too
+
+networks:
+  shared-proxy:
+    external: true       # shared CLIProxyAPI network — created by install.sh
+```
+
+This ensures the connection **survives Docker restarts automatically**
+— no `host.docker.internal` dependency needed.
+
+
 ---
 
 ## Phase 2: Codebase Scan

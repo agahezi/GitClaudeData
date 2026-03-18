@@ -407,24 +407,36 @@ if [ "$HAS_DOCKER" = true ]; then
   export ANTHROPIC_BASE_URL="http://localhost:8317"
   export ANTHROPIC_AUTH_TOKEN="sk-dummy"
 
-  TEST_OUTPUT=$(claude --print "Reply with one word: OK" 2>&1)
-  TEST_EXIT=$?
+  # Test via curl directly to CLIProxyAPI
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    --max-time 15 \
+    -X POST "http://localhost:8317/v1/messages" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: dummy" \
+    -H "anthropic-version: 2023-06-01" \
+    -d '{"model":"claude-sonnet-4-5-20250929","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' \
+    2>/dev/null)
 
-  if echo "$TEST_OUTPUT" | grep -qi "^ok"; then
-    ok "Claude responded successfully — no 401 errors!"
-    echo ""
-    echo -e "  ${GREEN}${BOLD}Everything is working end-to-end.${RESET}"
-  elif echo "$TEST_OUTPUT" | grep -q "529\|overloaded"; then
-    warn "Anthropic servers are temporarily overloaded (529)."
-    ok "Auth is working correctly — try claude again in a few minutes."
-  elif echo "$TEST_OUTPUT" | grep -q "401\|authentication"; then
-    warn "Auth error — run: cliproxy login"
-  elif echo "$TEST_OUTPUT" | grep -q "refused\|502\|503"; then
-    warn "Proxy not reachable — run: cliproxy start"
-  else
-    warn "Unexpected response: $TEST_OUTPUT"
-    echo "  Run manually to verify: claude "hello""
-  fi
+  case "$HTTP_CODE" in
+    200)
+      ok "CLIProxyAPI responded (HTTP 200) — auth is working!"
+      echo ""
+      echo -e "  ${GREEN}${BOLD}Everything is working end-to-end.${RESET}"
+      ;;
+    529)
+      warn "Anthropic servers temporarily overloaded (529) — auth is OK."
+      ok "Try: claude \"hello\" in a few minutes."
+      ;;
+    401)
+      warn "Authentication error (401) — run: cliproxy login"
+      ;;
+    000)
+      warn "Could not reach proxy — run: cliproxy start"
+      ;;
+    *)
+      warn "HTTP $HTTP_CODE — run: cliproxy status"
+      ;;
+  esac
 else
   warn "Docker not available — skipping CLIProxyAPI login and verification."
 fi
