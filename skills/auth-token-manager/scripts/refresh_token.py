@@ -3,25 +3,23 @@
 auth-token-manager — refresh_token.py
 
 Claude OAuth:
-  - accessToken תקף ~שנה, אין silent refresh
-  - קורא טוקן קיים, מתריע לפני פקיעה, כותב לcentral env
-  - לא מנסה לחדש אוטומטית — חידוש דורש claude setup-token ידני
-
-Gemini OAuth:
-  - accessToken תקף ~שעה, gcloud מחדש אוטומטית
-  - מריץ gcloud auth print-access-token בכל ריצה
-  - מבצע docker restart רק אם הטוקן השתנה
+  - accessToken valid ~1 year, no silent refresh
+  - Reads existing token, warns before expiry, writes to central env
+  - Does NOT attempt auto-renewal — renewal requires browser auth via CLIProxyAPI
 
 Commands:
-  (default)     בדיקה + כתיבה לcentral env
-  --force       כתיבה מיידית גם אם הכל תקין
-  --status      הצגת סטטוס בלי שינויים
-  --link <dir>  קישור תיקיית פרויקט לcentral store
+  (default)     Check + write to central env
+  --force       Write immediately even if everything OK
+  --status      Show status without changes
+  --link <dir>  Link project directory to central store
+  --migrate-project <dir>  Migrate project to centralized CLIProxyAPI proxy
 """
 
 import json
 import os
+import re
 import sys
+import shutil
 import subprocess
 import argparse
 from datetime import datetime, timezone
@@ -48,15 +46,15 @@ def load_config() -> dict:
         "credentials": Path(os.environ.get("CLAUDE_CREDENTIALS_PATH",
                             cfg.get("CLAUDE_CREDENTIALS_PATH",
                             Path.home() / ".claude" / ".credentials.json"))),
-        "proxy_port":  int(cfg.get("AI_PROXY_PORT", 8080)),
+        "proxy_port":  int(cfg.get("AI_PROXY_PORT", 8317)),
     }
 
 # ─── Claude ───────────────────────────────────────────────────
 
 def get_claude_status(credentials_path: Path) -> dict:
     """
-    קורא את הטוקן הקיים ומחשב ימים לפקיעה.
-    לא מנסה silent refresh — Claude OAuth אין מנגנון כזה.
+    Reads existing token and calculates days until expiry.
+    Does NOT attempt silent refresh — Claude OAuth has no such mechanism.
     """
     if not credentials_path.exists():
         return {"state": "missing", "token": None, "days_left": None, "expires_at": None}
@@ -97,44 +95,40 @@ def print_claude_warning(status: dict):
         print("╔══════════════════════════════════════════════════════╗")
         print("║         ✗  CLAUDE TOKEN EXPIRED                      ║")
         print("╠══════════════════════════════════════════════════════╣")
-        print("║  הרץ:                                                 ║")
-        print("║    claude setup-token                                 ║")
+        print("║  Run:                                                 ║")
+        print("║    bash ~/proxy-stack/claude-login.sh                 ║")
         print("║    token-refresh --force                              ║")
         print("╚══════════════════════════════════════════════════════╝")
     elif status["state"] == "alert":
-        print(f"  ⚠  CLAUDE TOKEN — {days} ימים לפקיעה ({exp})")
-        print(f"     פעולה נדרשת בקרוב: claude setup-token && token-refresh --force")
+        print(f"  ⚠  CLAUDE TOKEN — {days} days until expiry ({exp})")
+        print(f"     Action required soon: bash ~/proxy-stack/claude-login.sh && token-refresh --force")
     elif status["state"] == "warning":
-        print(f"  ·  CLAUDE TOKEN — {days} ימים לפקיעה ({exp})")
-        print(f"     תזכורת: חידוש ידני נדרש לפני {exp}")
+        print(f"  ·  CLAUDE TOKEN — {days} days until expiry ({exp})")
+        print(f"     Reminder: manual renewal required before {exp}")
 
-# ─── Gemini ───────────────────────────────────────────────────
+# ─── CLIProxy ────────────────────────────────────────────────
 
-def get_gemini_token() -> dict:
+def check_cliproxy_health() -> dict:
     """
-    מקבל טוקן Gemini טרי דרך gcloud.
-    gcloud מחדש אוטומטית אם הטוקן הנוכחי פג.
+    Checks that CLIProxyAPI responds and has auth clients loaded.
+    Returns healthy only if at least one client is loaded.
     """
+    import urllib.request
+    import urllib.error
     try:
-        r = subprocess.run(
-            ["gcloud", "auth", "print-access-token"],
-            capture_output=True, text=True, timeout=15
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            return {"state": "valid", "token": r.stdout.strip()}
-        return {"state": "session_expired", "error": r.stderr.strip()}
-    except FileNotFoundError:
-        return {"state": "not_installed"}
-    except subprocess.TimeoutExpired:
-        return {"state": "timeout"}
-
-def print_gemini_warning(g: dict):
-    if g["state"] == "session_expired":
-        print("  ⚠  GEMINI SESSION פג — הרץ: gcloud auth login")
-    elif g["state"] == "not_installed":
-        print("  ·  gcloud לא מותקן — Gemini לא זמין")
-    elif g["state"] == "timeout":
-        print("  ⚠  gcloud timeout — Gemini לא עודכן בריצה זו")
+        req = urllib.request.urlopen(
+            "http://localhost:8317/v1/models", timeout=5)
+        import json as _json
+        data = _json.loads(req.read().decode())
+        clients = len(data.get("data", []))
+        if clients > 0:
+            return {"state": "healthy", "clients": clients}
+        else:
+            return {"state": "no_auth", "clients": 0}
+    except urllib.error.URLError:
+        return {"state": "unavailable", "error": "connection refused"}
+    except Exception as e:
+        return {"state": "unavailable", "error": str(e)}
 
 # ─── Central env ─────────────────────────────────────────────
 
@@ -164,17 +158,6 @@ def write_central_env(path: Path, updates: dict):
     path.write_text("\n".join(lines) + "\n")
     path.chmod(0o600)
 
-def restart_proxy_if_gemini_changed(port: int, old_token: str, new_token: str):
-    """מריץ docker restart רק אם טוקן Gemini השתנה."""
-    if not new_token or old_token == new_token:
-        return
-    try:
-        subprocess.run(["docker", "restart", "ai-proxy"],
-                       capture_output=True, timeout=15)
-        print("[OK] Proxy restarted — Gemini token updated")
-    except Exception:
-        pass
-
 # ─── Project linking ──────────────────────────────────────────
 
 def link_project(project_dir: str, cfg: dict):
@@ -185,34 +168,29 @@ def link_project(project_dir: str, cfg: dict):
 
     env_file  = project / ".env"
     gitignore = project / ".gitignore"
-    port      = cfg["proxy_port"]
-
-    claude_s = get_claude_status(cfg["credentials"])
-    token    = claude_s.get("token", "")
 
     new_lines = []
     if env_file.exists():
-        found_claude = False
-        found_proxy  = False
+        found_base_url = False
+        found_api_key  = False
         for line in env_file.read_text().splitlines():
-            if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
-                new_lines.append(f'CLAUDE_CODE_OAUTH_TOKEN="{token}"')
-                found_claude = True
-            elif line.startswith("AI_PROXY_URL="):
-                new_lines.append(f'AI_PROXY_URL="http://localhost:{port}/v1"')
-                found_proxy = True
+            if line.startswith("ANTHROPIC_BASE_URL="):
+                new_lines.append("ANTHROPIC_BASE_URL=http://localhost:8317")
+                found_base_url = True
+            elif line.startswith("ANTHROPIC_API_KEY="):
+                new_lines.append("ANTHROPIC_API_KEY=dummy")
+                found_api_key = True
             else:
                 new_lines.append(line)
-        if not found_claude:
-            new_lines += ["", f'CLAUDE_CODE_OAUTH_TOKEN="{token}"']
-        if not found_proxy:
-            new_lines += [f'AI_PROXY_URL="http://localhost:{port}/v1"']
+        if not found_base_url:
+            new_lines += ["", "ANTHROPIC_BASE_URL=http://localhost:8317"]
+        if not found_api_key:
+            new_lines += ["ANTHROPIC_API_KEY=dummy"]
     else:
         new_lines = [
-            "# AI tokens — managed by auth-token-manager",
-            f"# Central store: {cfg['central_env']}",
-            f'CLAUDE_CODE_OAUTH_TOKEN="{token}"',
-            f'AI_PROXY_URL="http://localhost:{port}/v1"',
+            "# CLIProxyAPI — managed by auth-token-manager",
+            "ANTHROPIC_BASE_URL=http://localhost:8317",
+            "ANTHROPIC_API_KEY=dummy",
         ]
 
     env_file.write_text("\n".join(new_lines) + "\n")
@@ -224,15 +202,14 @@ def link_project(project_dir: str, cfg: dict):
         print("[OK] .env added to .gitignore")
 
     print(f"[OK] Project linked: {project.name}")
-    print(f"     CLAUDE_CODE_OAUTH_TOKEN + AI_PROXY_URL written to .env")
-    print(f"\n     Python:  AsyncOpenAI(base_url=os.getenv('AI_PROXY_URL'), api_key='local')")
-    print(f"     Docker:  http://host.docker.internal:{port}/v1")
+    print(f"     ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY written to .env")
+    print(f"\n     Python:  get_anthropic_client()  (see proxy-setup docs)")
+    print(f"     Docker:  ANTHROPIC_BASE_URL=http://cli-proxy-api:8317")
 
 # ─── Commands ────────────────────────────────────────────────
 
 def cmd_status(cfg: dict):
     claude_s = get_claude_status(cfg["credentials"])
-    gemini_s = get_gemini_token()
     central  = cfg["central_env"]
 
     icon = {"valid": "✓", "warning": "·", "alert": "⚠", "expired": "✗",
@@ -250,31 +227,22 @@ def cmd_status(cfg: dict):
     t = claude_s.get("token") or ""
     print(f"           token: {'...' + t[-12:] if t else 'NONE'}")
 
-    gi = "✓" if gemini_s["state"] == "valid" else "✗"
-    gt = gemini_s.get("token", "")
-    print(f"  Gemini:  {gi} {gemini_s['state'].upper()}", end="")
-    if gt:
-        print(f"  (...{gt[-8:]})", end="")
-    print()
+    proxy_s = check_cliproxy_health()
+    pi = "✓" if proxy_s["state"] == "healthy" else "✗"
+    print(f"  CLIProxy: {pi} {proxy_s['state'].upper()}", end="")
+    if proxy_s.get("clients"):
+        print(f"  ({proxy_s['clients']} auth clients loaded)", end="")
+    if proxy_s.get("error"):
+        print(f"  ({proxy_s['error']})", end="")
+    print(f"  → http://localhost:8317")
 
     print(f"  Central: {'✓' if central.exists() else '✗ missing'}  {central}")
-
-    try:
-        r = subprocess.run(
-            ["docker", "ps", "--filter", "name=ai-proxy", "--format", "{{.Status}}"],
-            capture_output=True, text=True, timeout=5)
-        proxy_s = r.stdout.strip() or "not running"
-    except Exception:
-        proxy_s = "docker unavailable"
-    print(f"  Proxy:   {proxy_s}  → http://localhost:{cfg['proxy_port']}/v1")
     print(f"{'─'*56}\n")
 
     if claude_s["state"] not in ("valid", "warning"):
         print_claude_warning(claude_s)
     elif claude_s["state"] == "warning":
         print_claude_warning(claude_s)
-    if gemini_s["state"] != "valid":
-        print_gemini_warning(gemini_s)
 
 def cmd_refresh(cfg: dict, force: bool = False):
     claude_s = get_claude_status(cfg["credentials"])
@@ -286,41 +254,273 @@ def cmd_refresh(cfg: dict, force: bool = False):
         print(f" — {claude_s['days_left']} days left", end="")
     print()
 
-    if claude_s["state"] == "missing":
-        print("[ERROR] אין טוקן Claude. הרץ: claude setup-token")
-        sys.exit(1)
-
-    if claude_s["state"] == "expired":
-        print_claude_warning(claude_s)
-        sys.exit(1)
+    if claude_s["state"] in ("missing", "expired"):
+        proxy_s = check_cliproxy_health()
+        if proxy_s["state"] == "healthy":
+            print(f"[WARNING] Claude credentials {claude_s['state']} — but CLIProxy healthy ({proxy_s['clients']} clients), continuing")
+        else:
+            print_claude_warning(claude_s)
+            print(f"[ERROR] CLIProxy also unavailable — {proxy_s.get('error', proxy_s['state'])}")
+            sys.exit(1)
 
     if claude_s["state"] in ("warning", "alert"):
         print_claude_warning(claude_s)
 
-    # ── Gemini ────────────────────────────────────────────────
-    old_env    = read_env_file(central)
-    old_gemini = old_env.get("GEMINI_OAUTH_TOKEN", "")
-
-    gemini_s = get_gemini_token()
-    updates  = {"CLAUDE_CODE_OAUTH_TOKEN": claude_s["token"]}
-
-    if gemini_s["state"] == "valid":
-        updates["GEMINI_OAUTH_TOKEN"] = gemini_s["token"]
-        changed = gemini_s["token"] != old_gemini
-        print(f"[Gemini] valid — token {'changed' if changed else 'unchanged'}")
-    else:
-        print_gemini_warning(gemini_s)
-
     # ── Write ─────────────────────────────────────────────────
+    updates = {}
+    if claude_s.get("token"):
+        updates["CLAUDE_CREDENTIAL_TOKEN"] = claude_s["token"]
     write_central_env(central, updates)
     print(f"[OK] Written to {central}")
 
-    restart_proxy_if_gemini_changed(
-        cfg["proxy_port"], old_gemini,
-        updates.get("GEMINI_OAUTH_TOKEN", "")
-    )
+    # ── CLIProxy ──────────────────────────────────────────────
+    proxy_s = check_cliproxy_health()
+    if proxy_s["state"] == "healthy":
+        print(f"[CLIProxy] healthy — {proxy_s['clients']} auth clients loaded")
+    elif proxy_s["state"] == "no_auth":
+        print("[CLIProxy] WARNING — proxy running but no auth loaded")
+        print("           Run: bash ~/proxy-stack/claude-login.sh")
+    else:
+        print(f"[CLIProxy] ERROR — {proxy_s.get('error', 'unavailable')}")
+        print("           Run: cd ~/proxy-stack && docker compose up -d cli-proxy-api")
+        print("           If issue persists: bash ~/proxy-stack/claude-login.sh")
 
-    print(f"\n     source ~/.bashrc  (לטעינה בshell הנוכחי)")
+    print(f"\n     source ~/.bashrc  (to reload in current shell)")
+
+# ─── Project migration ───────────────────────────────────────
+
+GET_ANTHROPIC_CLIENT_FUNC = '''
+def get_anthropic_client() -> anthropic.Anthropic:
+    """
+    Returns Anthropic client configured to use centralized CLIProxyAPI proxy.
+    Routes through localhost:8317 — no direct API key required.
+    Uses Claude OAuth subscription via proxy-stack container.
+    """
+    return anthropic.Anthropic(
+        api_key=os.getenv("ANTHROPIC_API_KEY", "dummy"),
+        base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+    )
+'''.strip()
+
+def _find_project_files(project: Path) -> dict:
+    result = {
+        "docker_compose": None,
+        "env_files": [],
+        "python_files": [],
+    }
+    for name in ("docker-compose.yml", "docker-compose.yaml"):
+        f = project / name
+        if f.exists():
+            result["docker_compose"] = f
+            break
+
+    for name in (".env", ".env.example", ".env.production", ".env.local"):
+        f = project / name
+        if f.exists():
+            result["env_files"].append(f)
+
+    for pyf in project.rglob("*.py"):
+        parts = pyf.parts
+        if any(skip in parts for skip in ("venv", ".venv", "node_modules", "__pycache__", ".git")):
+            continue
+        try:
+            content = pyf.read_text(errors="ignore")
+            if "anthropic.Anthropic(" in content or "ANTHROPIC_API_KEY" in content:
+                result["python_files"].append(pyf)
+        except Exception:
+            pass
+
+    return result
+
+def _migrate_docker_compose(dc_file: Path) -> str:
+    if dc_file is None:
+        return "no docker-compose found"
+
+    shutil.copy(dc_file, str(dc_file) + ".backup")
+    content = dc_file.read_text()
+    original = content
+
+    pattern = re.compile(
+        r'^  cli-proxy-api:\s*\n(?:    .*\n|  \n)*',
+        re.MULTILINE
+    )
+    content = pattern.sub('', content)
+    content = re.sub(r'^\s*cli_proxy_auth:.*\n', '', content, flags=re.MULTILINE)
+
+    if content != original:
+        dc_file.write_text(content)
+        print(f"[REMOVED] cli-proxy-api service from {dc_file.name}")
+        return "cli-proxy-api service removed"
+    else:
+        return "no changes needed"
+
+def _migrate_env_file(env_file: Path) -> bool:
+    shutil.copy(env_file, str(env_file) + ".backup")
+    lines = env_file.read_text().splitlines()
+    new_lines = []
+    found_base_url = False
+    found_api_key = False
+    changed = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("CLI_PROXY_API_KEY=") or "cli_proxy_auth" in stripped:
+            changed = True
+            continue
+
+        if stripped.startswith("ANTHROPIC_BASE_URL="):
+            found_base_url = True
+            val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            if val != "http://localhost:8317":
+                new_lines.append("ANTHROPIC_BASE_URL=http://localhost:8317")
+                changed = True
+            else:
+                new_lines.append(line)
+            continue
+
+        if stripped.startswith("ANTHROPIC_API_KEY="):
+            found_api_key = True
+            val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            if val != "dummy":
+                new_lines.append("ANTHROPIC_API_KEY=dummy")
+                changed = True
+            else:
+                new_lines.append(line)
+            continue
+
+        new_lines.append(line)
+
+    if not found_base_url:
+        new_lines.append("ANTHROPIC_BASE_URL=http://localhost:8317")
+        changed = True
+    if not found_api_key:
+        new_lines.append("ANTHROPIC_API_KEY=dummy")
+        changed = True
+
+    if changed:
+        env_file.write_text("\n".join(new_lines) + "\n")
+        print(f"[UPDATED] {env_file.name} — ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY")
+    return changed
+
+def _migrate_python_file(pyf: Path) -> int:
+    shutil.copy(pyf, str(pyf) + ".backup")
+    content = pyf.read_text()
+    original = content
+    replacements = 0
+
+    if "def get_anthropic_client(" not in content:
+        lines = content.split("\n")
+        insert_idx = 0
+        for i, line in enumerate(lines):
+            if line.startswith("import ") or line.startswith("from ") or line == "":
+                insert_idx = i + 1
+            elif insert_idx > 0 and line.strip() and not line.startswith("#"):
+                break
+
+        lines.insert(insert_idx, "")
+        lines.insert(insert_idx + 1, GET_ANTHROPIC_CLIENT_FUNC)
+        lines.insert(insert_idx + 2, "")
+        content = "\n".join(lines)
+
+    if "import os" not in content:
+        content = "import os\n" + content
+    if "import anthropic" not in content:
+        content = "import anthropic\n" + content
+
+    pattern_with_args = re.compile(r'anthropic\.Anthropic\([^)]*\)')
+    def replace_match(m):
+        nonlocal replacements
+        start = m.start()
+        line_start = content.rfind("\n", 0, start) + 1
+        line = content[line_start:start]
+        if "return " in line:
+            return m.group()
+        replacements += 1
+        return "get_anthropic_client()"
+
+    content = pattern_with_args.sub(replace_match, content)
+
+    if content != original:
+        pyf.write_text(content)
+        try:
+            subprocess.run(
+                ["python3", "-c", f"import py_compile; py_compile.compile('{pyf}')"],
+                capture_output=True, text=True, timeout=10
+            )
+        except Exception:
+            pass
+        print(f"[UPDATED] {pyf.name} — Anthropic client updated")
+
+    return replacements
+
+def _validate_docker_compose(project: Path) -> bool:
+    try:
+        r = subprocess.run(
+            ["docker", "compose", "config"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(project)
+        )
+        if r.returncode == 0:
+            print("[OK] docker-compose.yml is valid")
+            return True
+        else:
+            print("[ERROR] docker-compose.yml has syntax errors — manual review needed")
+            return False
+    except FileNotFoundError:
+        print("[SKIP] docker compose not available — skipping validation")
+        return True
+    except Exception:
+        print("[SKIP] docker compose validation skipped")
+        return True
+
+def cmd_migrate_project(project_dir: str):
+    project = Path(project_dir).resolve()
+    if not project.exists():
+        print(f"[ERROR] Directory not found: {project}")
+        sys.exit(1)
+
+    project_name = project.name
+    print(f"\n{'='*42}")
+    print(f"  Migrating: {project_name}")
+    print(f"{'='*42}\n")
+
+    files = _find_project_files(project)
+    print(f"[SCAN] docker-compose: {'found' if files['docker_compose'] else 'not found'}")
+    print(f"[SCAN] .env files: {len(files['env_files'])} found")
+    print(f"[SCAN] Python files with Anthropic: {len(files['python_files'])} found\n")
+
+    dc_result = _migrate_docker_compose(files["docker_compose"])
+
+    env_updated = []
+    for ef in files["env_files"]:
+        if _migrate_env_file(ef):
+            env_updated.append(ef.name)
+
+    py_updated = []
+    total_replacements = 0
+    for pyf in files["python_files"]:
+        count = _migrate_python_file(pyf)
+        if count > 0:
+            py_updated.append(pyf.name)
+            total_replacements += count
+
+    if files["docker_compose"]:
+        print()
+        _validate_docker_compose(project)
+
+    print(f"\n{'='*42}")
+    print(f"  Migration Summary: {project_name}")
+    print(f"{'='*42}")
+    print(f"  docker-compose.yml:    {dc_result}")
+    print(f"  .env files updated:    {', '.join(env_updated) if env_updated else 'no changes needed'}")
+    print(f"  Python files updated:  {', '.join(py_updated) if py_updated else 'no changes needed'}")
+    print(f"  Anthropic clients replaced: {total_replacements}")
+    print()
+    print("  Next steps:")
+    print("  1. source ~/.bashrc")
+    print("  2. docker compose up -d")
+    print('  3. claude "hello"  — verify proxy works')
+    print(f"{'='*42}\n")
 
 # ─── Entry point ─────────────────────────────────────────────
 
@@ -329,6 +529,8 @@ def main():
     parser.add_argument("--force",  action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--link",   metavar="DIR")
+    parser.add_argument("--migrate-project", metavar="DIR",
+                        help="Migrate a project to use centralized CLIProxyAPI proxy")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -337,6 +539,8 @@ def main():
         cmd_status(cfg)
     elif args.link:
         link_project(args.link, cfg)
+    elif args.migrate_project:
+        cmd_migrate_project(args.migrate_project)
     else:
         cmd_refresh(cfg, force=args.force)
 

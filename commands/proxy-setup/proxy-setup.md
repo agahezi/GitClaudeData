@@ -1,7 +1,7 @@
 # /proxy-setup — Auth Token Manager Agent
 
-You are an autonomous agent responsible for wiring the local CLI proxy
-into the current project. You manage the full process end-to-end.
+You are an autonomous agent responsible for wiring the centralized CLIProxyAPI
+proxy into the current project. You manage the full process end-to-end.
 
 ---
 
@@ -12,75 +12,30 @@ asking the next one. Never ask more than one question at a time.
 
 ---
 
-### Wizard Step 1 — Provider
+### Wizard Step 1 — Model
 
 Ask the user:
 
-> **Step 1 of 3 — Which AI provider do you want to use?**
->
-> 1. Claude (Anthropic)
-> 2. Gemini (Google)
-> 3. Both
-
-Wait for answer. Store as `CHOSEN_PROVIDER` = `claude` | `gemini` | `both`.
-
----
-
-### Wizard Step 2 — Model
-
-Ask based on CHOSEN_PROVIDER:
-
-**If CHOSEN_PROVIDER = claude**, ask:
-
-> **Step 2 of 3 — Which Claude model?**
+> **Step 1 of 2 — This project will use Claude via CLIProxyAPI proxy.**
+> **Which Claude model?**
 >
 > | # | Model | Description |
 > |---|-------|-------------|
-> | 1 | `claude-opus-4-6` | Most capable — best for complex tasks, coding, agents |
-> | 2 | `claude-sonnet-4-6` | Balanced — fast, smart, default for most work ⭐ |
+> | 1 | `claude-opus-4-6` | Most capable — complex tasks, agents |
+> | 2 | `claude-sonnet-4-6` | Balanced — fast, smart, default ⭐ |
 > | 3 | `claude-haiku-4-5` | Fastest — high-volume, simple tasks |
 
-**If CHOSEN_PROVIDER = gemini**, ask:
-
-> **Step 2 of 3 — Which Gemini model?**
->
-> | # | Model | Description |
-> |---|-------|-------------|
-> | 1 | `gemini-2.5-pro` | Most capable — reasoning, coding, complex agents ⭐ |
-> | 2 | `gemini-2.5-flash` | Fast & efficient — great price/performance |
-> | 3 | `gemini-2.0-flash` | Fastest & cheapest — high-volume tasks |
-
-**If CHOSEN_PROVIDER = both**, ask:
-
-> **Step 2 of 3 — Which model for each provider?**
->
-> Claude:
-> | # | Model | Description |
-> |---|-------|-------------|
-> | 1 | `claude-opus-4-6` | Most capable |
-> | 2 | `claude-sonnet-4-6` | Balanced ⭐ |
-> | 3 | `claude-haiku-4-5` | Fastest |
->
-> Gemini:
-> | # | Model | Description |
-> |---|-------|-------------|
-> | 1 | `gemini-2.5-pro` | Most capable ⭐ |
-> | 2 | `gemini-2.5-flash` | Fast & efficient |
-> | 3 | `gemini-2.0-flash` | Fastest |
->
-> Reply with two numbers, e.g. "Claude: 2, Gemini: 1"
-
-Wait for answer. Store as `CHOSEN_MODEL_CLAUDE` and/or `CHOSEN_MODEL_GEMINI`.
+Wait for answer. Store as `CHOSEN_MODEL_CLAUDE`.
 
 ---
 
-### Wizard Step 3 — Cleanup
+### Wizard Step 2 — Cleanup
 
 Ask the user:
 
-> **Step 3 of 3 — What should happen to existing LLM API calls in the code?**
+> **Step 2 of 2 — What should happen to existing LLM API calls in the code?**
 >
-> 1. **Replace** — swap all calls to use the chosen provider/model via proxy
+> 1. **Replace** — swap all calls to use Claude via CLIProxyAPI proxy
 > 2. **Remove** — delete unused provider imports and keys entirely
 > 3. **Replace + Remove** — replace active calls AND clean up all leftovers ⭐
 
@@ -93,9 +48,10 @@ Wait for answer. Store as `CLEANUP_MODE` = `replace` | `remove` | `replace_and_r
 Show a summary and ask for confirmation before proceeding:
 
 > **Ready to proceed with:**
-> - Provider: `CHOSEN_PROVIDER`
-> - Model(s): `CHOSEN_MODEL_CLAUDE` / `CHOSEN_MODEL_GEMINI`
+> - Provider: Claude via CLIProxyAPI
+> - Model: `CHOSEN_MODEL_CLAUDE`
 > - Cleanup: `CLEANUP_MODE`
+> - Proxy: http://localhost:8317
 >
 > Shall I continue? (yes/no)
 
@@ -108,61 +64,50 @@ Only proceed to Phase 1 after confirmation.
 ### 1a. Token check
 
 ```bash
-python3 ~/.local/lib/auth-token-manager/scripts/refresh_token.py --status
+python3 ~/.claude/skills/auth-token-manager/scripts/refresh_token.py --status
 ```
 
-**Claude token rules (no silent refresh — token is valid for ~1 year):**
+Parse the output for the CLIProxy line:
 
-| Status | Action |
-|--------|--------|
-| `VALID` (days_left ≥ 7) | Proceed |
-| `WARNING` (days_left 7-14) | Warn user, proceed |
-| `ALERT` (days_left < 7) | Warn urgently, proceed but remind to renew soon |
-| `EXPIRED` | STOP: "Claude token expired. Run `claude setup-token` then re-run /proxy-setup." |
-| `MISSING` | STOP: "No Claude token found. Run `install.sh` first." |
+| CLIProxy output | Action |
+|----------------|--------|
+| `CLIProxy: ✓ HEALTHY` | Proceed |
+| `CLIProxy: ✗ NO_AUTH` | STOP: "CLIProxyAPI has no auth loaded. Run: `bash ~/proxy-stack/claude-login.sh` Then re-run /proxy-setup" |
+| `CLIProxy: ✗ UNAVAILABLE` | STOP: "CLIProxyAPI is not running. Run: `cd ~/proxy-stack && docker compose up -d cli-proxy-api` Then re-run /proxy-setup" |
 
-> ⚠️ Do NOT attempt `claude --version` to trigger a refresh.
-> Claude OAuth has no silent refresh mechanism.
-> The only way to renew is `claude setup-token` (manual, browser).
-
-**Gemini token rules (gcloud auto-refreshes ~every hour):**
-
-If CHOSEN_PROVIDER includes gemini:
-```bash
-gcloud auth print-access-token
-```
-- Success → proceed (gcloud refreshed automatically if needed)
-- Fails → STOP: "Gemini session expired. Run `gcloud auth login` then re-run /proxy-setup."
+> ⚠️ Never ask the user to run `claude setup-token` — this is not used anymore.
+> CLIProxyAPI manages token refresh automatically.
 
 ### 1b. Proxy check
 
 ```bash
-docker ps --filter name=ai-proxy --format "{{.Status}}"
+docker ps --filter name=cli-proxy-api --format "{{.Status}}"
 ```
 
 - Running → proceed
 - Not running → start it:
   ```bash
-  python3 ~/.local/lib/auth-token-manager/scripts/proxy_manager.py --start
+  cd ~/proxy-stack && docker compose up -d cli-proxy-api
   ```
 - Docker unavailable → STOP:
   > "Docker is required. Install Docker and re-run /proxy-setup."
 
-### 1c. Get proxy port
+### 1c. Port
 
-```bash
-docker port ai-proxy 4000 2>/dev/null | cut -d: -f2
-```
-
-Store as `PROXY_PORT`. Default: `8080`.
+Port is always **8317**. Store `PROXY_PORT=8317` as constant.
 
 ### 1d. Wire project
 
 ```bash
-python3 ~/.local/lib/auth-token-manager/scripts/refresh_token.py --link "$PWD"
+python3 ~/.claude/skills/auth-token-manager/scripts/refresh_token.py --migrate-project "$PWD"
 ```
 
-Confirms `.env` was created/updated with `CLAUDE_CODE_OAUTH_TOKEN` and `AI_PROXY_URL`.
+This handles:
+- Removing local `cli-proxy-api` service from docker-compose if present
+- Setting `ANTHROPIC_BASE_URL=http://localhost:8317`
+- Setting `ANTHROPIC_API_KEY=dummy`
+- Adding `get_anthropic_client()` to Python files
+- Validating docker-compose.yml syntax
 
 ### 1e. Detect if project runs in Docker
 
@@ -172,10 +117,10 @@ Confirms `.env` was created/updated with `CLAUDE_CODE_OAUTH_TOKEN` and `AI_PROXY
 
 **Set proxy URL based on context:**
 
-| Context | URL to use |
-|---------|-----------|
-| Host / Claude CLI | `http://localhost:8317/v1` |
-| Docker container | `http://cli-proxy-api:8317/v1` |
+| Context | Environment variables |
+|---------|----------------------|
+| Host / Claude CLI | `ANTHROPIC_BASE_URL=http://localhost:8317` `ANTHROPIC_API_KEY=dummy` |
+| Docker container | `ANTHROPIC_BASE_URL=http://cli-proxy-api:8317` `ANTHROPIC_API_KEY=dummy` |
 
 **If DOCKER_PROJECT=true** — add `shared-proxy` network to `docker-compose.yml`:
 
@@ -183,8 +128,8 @@ Confirms `.env` was created/updated with `CLAUDE_CODE_OAUTH_TOKEN` and `AI_PROXY
 services:
   your-app:
     environment:
-      - AI_PROXY_URL=http://cli-proxy-api:8317/v1
-      - OPENAI_API_KEY=local
+      - ANTHROPIC_BASE_URL=http://cli-proxy-api:8317
+      - ANTHROPIC_API_KEY=dummy
     networks:
       - shared-proxy
       - default          # keep existing network too
@@ -197,42 +142,61 @@ networks:
 This ensures the connection **survives Docker restarts automatically**
 — no `host.docker.internal` dependency needed.
 
+### 1f. Check ~/.profile loads env vars
+
+```bash
+if ! grep -q "source ~/.bashrc" ~/.profile 2>/dev/null; then
+    echo 'source ~/.bashrc' >> ~/.profile
+    echo "[OK] ~/.profile configured"
+fi
+```
+
+---
+
+## OAuth Token Renewal
+
+If CLIProxyAPI loses auth (500 auth_unavailable error):
+
+**Option A — Run install script (auto-detects and renews):**
+```bash
+bash ~/.claude/skills/auth-token-manager/scripts/install.sh
+```
+
+**Option B — Manual renewal:**
+See `~/proxy-stack/PROXY_RENEW.md`
+
+> ⚠️ Never ask the user to run `claude setup-token` — CLIProxyAPI handles all token management.
 
 ---
 
 ## Phase 2: Codebase Scan
 
-Scan for ALL existing LLM API usage:
+Scan for existing Anthropic API usage:
 
 ```bash
 grep -rn \
   -e "import anthropic" -e "from anthropic" \
-  -e "Anthropic(" -e "AsyncAnthropic(" \
+  -e "anthropic.Anthropic(" -e "AsyncAnthropic(" \
   -e "ANTHROPIC_API_KEY" -e "api.anthropic.com" \
-  -e "import google.generativeai" -e "genai\." \
-  -e "GEMINI_API_KEY" -e "GOOGLE_API_KEY" \
-  -e "generativelanguage.googleapis.com" \
-  -e "openai.api_key" -e "OpenAI(api_key" -e "OPENAI_API_KEY" \
   --include="*.py" \
   --exclude-dir={__pycache__,.venv,node_modules,tests,test} \
   .
 ```
 
-Report findings grouped by provider.
+Report findings.
 
 **Show this scan result and wait for confirmation before Phase 3.**
 
 If nothing found → inform user and stop:
-> "No direct LLM API calls found in the codebase. Nothing to change."
+> "No direct Anthropic API calls found in the codebase. Nothing to change."
 
 ---
 
 ## Phase 3: Implementation
 
-Use `CHOSEN_MODEL_CLAUDE` and/or `CHOSEN_MODEL_GEMINI` from the wizard.
-Replace `PROXY_PORT` with the actual port from Phase 1c.
+Use `CHOSEN_MODEL_CLAUDE` from the wizard.
 
-### If CHOSEN_PROVIDER = claude
+### Anthropic client pattern
 
 ```python
 # BEFORE
@@ -246,62 +210,29 @@ response = client.messages.create(
 text = response.content[0].text
 
 # AFTER
-from openai import AsyncOpenAI
-client = AsyncOpenAI(
-    base_url=os.getenv("AI_PROXY_URL", "http://localhost:PROXY_PORT/v1"),
-    api_key="local",
-)
-response = await client.chat.completions.create(
+import os
+import anthropic
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """
+    Returns Anthropic client using centralized CLIProxyAPI proxy.
+    No direct API key required — uses Claude OAuth subscription.
+    """
+    return anthropic.Anthropic(
+        api_key=os.getenv("ANTHROPIC_API_KEY", "dummy"),
+        base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+    )
+
+client = get_anthropic_client()
+response = client.messages.create(
     model="CHOSEN_MODEL_CLAUDE",
     max_tokens=1024,
     messages=[{"role": "user", "content": prompt}]
 )
-text = response.choices[0].message.content
+text = response.content[0].text
 ```
 
-If CLEANUP_MODE includes remove: remove `import google.generativeai`, `genai.configure(...)` blocks.
-
----
-
-### If CHOSEN_PROVIDER = gemini
-
-```python
-# BEFORE
-import google.generativeai as genai
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("<any-model>")
-response = model.generate_content(prompt)
-text = response.text
-
-# AFTER
-from openai import AsyncOpenAI
-client = AsyncOpenAI(
-    base_url=os.getenv("AI_PROXY_URL", "http://localhost:PROXY_PORT/v1"),
-    api_key="local",
-)
-response = await client.chat.completions.create(
-    model="CHOSEN_MODEL_GEMINI",
-    messages=[{"role": "user", "content": prompt}]
-)
-text = response.choices[0].message.content
-```
-
-If CLEANUP_MODE includes remove: remove `import anthropic`, `Anthropic(...)` blocks.
-
----
-
-### If CHOSEN_PROVIDER = both
-
-```python
-from openai import AsyncOpenAI
-import os
-
-llm = AsyncOpenAI(
-    base_url=os.getenv("AI_PROXY_URL", "http://localhost:PROXY_PORT/v1"),
-    api_key="local",
-)
-# Use CHOSEN_MODEL_CLAUDE or CHOSEN_MODEL_GEMINI as needed
-```
+If CLEANUP_MODE includes remove: delete unused imports (`google.generativeai`, `openai`, etc.) and stale env references.
 
 ---
 
@@ -319,38 +250,46 @@ llm = AsyncOpenAI(
 
 ### .env
 
-| Provider | Keep | Remove |
-|----------|------|--------|
-| claude | `CLAUDE_CODE_OAUTH_TOKEN`, `AI_PROXY_URL` | `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` |
-| gemini | `GEMINI_OAUTH_TOKEN`, `AI_PROXY_URL` | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` |
-| both | `CLAUDE_CODE_OAUTH_TOKEN`, `GEMINI_OAUTH_TOKEN`, `AI_PROXY_URL` | `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| Keep | Remove if present |
+|------|-------------------|
+| `ANTHROPIC_BASE_URL=http://localhost:8317` | `CLAUDE_CODE_OAUTH_TOKEN` |
+| `ANTHROPIC_API_KEY=dummy` | `AI_PROXY_URL` |
+| | `GEMINI_API_KEY` |
+| | `GOOGLE_API_KEY` |
+| | `ANTHROPIC_AUTH_TOKEN` |
+| | `CLI_PROXY_API_KEY` |
 
 ### requirements.txt / pyproject.toml
 
 Verify no remaining usage before removing:
 ```bash
-grep -rn "anthropic\|google.generativeai" \
+grep -rn "google.generativeai\|from openai" \
   --include="*.py" --exclude-dir={tests,test,__pycache__} .
 ```
 
-| Provider | Remove if unused | Add |
-|----------|-----------------|-----|
-| claude | `anthropic`, `google-generativeai` | `openai>=1.0.0` |
-| gemini | `anthropic`, `google-generativeai` | `openai>=1.0.0` |
-| both | `anthropic`, `google-generativeai` | `openai>=1.0.0` |
+| Keep | Remove if unused |
+|------|-----------------|
+| `anthropic` | `google-generativeai` |
+| | `openai` (only if no other usage) |
 
 ---
 
 ## Phase 5: Verification
 
 ```bash
-# Verify proxy models list
-curl -s http://localhost:PROXY_PORT/v1/models \
-  -H "Authorization: Bearer local" | python3 -m json.tool | head -30
+# Verify CLIProxyAPI auth clients
+curl -s http://localhost:8317/v1/models | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+clients = len(d.get('data', []))
+print(f'Auth clients: {clients}')
+if clients == 0:
+    print('WARNING: no auth loaded — run claude-login.sh')
+    sys.exit(1)
+"
 ```
 
-Confirm chosen models appear in the list.
-If proxy fails → `token-proxy --restart`, wait 5s, retry.
+If proxy fails → `cd ~/proxy-stack && docker compose restart cli-proxy-api`, wait 5s, retry.
 
 ```bash
 # Syntax check all modified files
@@ -361,142 +300,125 @@ Fix any syntax errors before proceeding.
 
 ---
 
-## Phase 7: End-to-End LLM Validation
+## Phase 6: End-to-End LLM Validation
 
 This is the most important check — verifying the model actually responds
 through the proxy using the exact same code pattern written into the project.
 
-### 7a. Live model test
+### 6a. Live model test
 
 ```python
-# Run this directly
-import os, sys
-from openai import OpenAI
+import os
+import anthropic
 
-PROXY_PORT = "PROXY_PORT"   # replace with actual port
-client = OpenAI(
-    base_url=f"http://localhost:{PROXY_PORT}/v1",
-    api_key="local"
+client = anthropic.Anthropic(
+    api_key=os.getenv("ANTHROPIC_API_KEY", "dummy"),
+    base_url=os.getenv("ANTHROPIC_BASE_URL", "http://localhost:8317"),
 )
-
-MODELS_TO_TEST = []
-# Populate:
-# claude → [CHOSEN_MODEL_CLAUDE]
-# gemini → [CHOSEN_MODEL_GEMINI]
-# both   → [CHOSEN_MODEL_CLAUDE, CHOSEN_MODEL_GEMINI]
 
 TEST_PROMPT = (
     "Reply with exactly one sentence confirming you are working correctly. "
     "Include your model name in the reply."
 )
 
-results = {}
-for model in MODELS_TO_TEST:
-    print(f"\n[TEST] {model}...")
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            max_tokens=100,
-            messages=[{"role": "user", "content": TEST_PROMPT}]
-        )
-        reply = response.choices[0].message.content.strip()
-        results[model] = {"status": "PASS", "reply": reply}
-        print(f"[PASS] {reply}")
-    except Exception as e:
-        results[model] = {"status": "FAIL", "error": str(e)}
-        print(f"[FAIL] {e}")
-
-all_passed = all(r["status"] == "PASS" for r in results.values())
-if not all_passed:
-    sys.exit(1)
+model = "CHOSEN_MODEL_CLAUDE"
+print(f"\n[TEST] {model}...")
+try:
+    response = client.messages.create(
+        model=model,
+        max_tokens=100,
+        messages=[{"role": "user", "content": TEST_PROMPT}]
+    )
+    reply = response.content[0].text.strip()
+    print(f"[PASS] {reply}")
+except Exception as e:
+    print(f"[FAIL] {e}")
 ```
 
-**If any FAIL — diagnose before proceeding:**
+**If FAIL — diagnose before proceeding:**
 
 | Failure | Likely cause | Fix |
 |---------|-------------|-----|
-| `Connection refused` | Proxy not running | `token-proxy --restart` |
-| `model not found` | Model not in proxy config | `token-proxy --restart` |
-| `401 Unauthorized` | Token expired | `token-refresh --force` → `token-proxy --restart` |
+| `Connection refused` | Proxy not running | `cd ~/proxy-stack && docker compose up -d cli-proxy-api` |
+| `model not found` | Model not available | Check model name spelling |
+| `401 Unauthorized` / `auth_unavailable` | Token expired | `bash ~/.claude/skills/auth-token-manager/scripts/install.sh` or see `~/proxy-stack/PROXY_RENEW.md` |
 | `timeout` | Proxy starting up | Wait 10s and retry |
-| Gemini `quota exceeded` | gcloud token stale | `gcloud auth print-access-token` → `token-proxy --restart` |
 
-### 7b. Project smoke test (if applicable)
+### 6b. Project smoke test (if applicable)
 
 ```bash
 find . -name "*.py" \
   -not -path "*/tests/*" -not -path "*/__pycache__/*" \
-  | xargs grep -l "AI_PROXY_URL\|AsyncOpenAI\|chat.completions" 2>/dev/null \
+  | xargs grep -l "ANTHROPIC_BASE_URL\|get_anthropic_client\|anthropic.Anthropic" 2>/dev/null \
   | head -5
 ```
 
 If found, ask:
-> "Found files that use the proxy. Would you like me to run a smoke test on any of them?"
+> "Found files that use the Anthropic client. Would you like me to run a smoke test on any of them?"
 
 ---
 
-## Phase 6: Summary Report
+## Phase 7: Summary Report
 
 ```
 ╔══════════════════════════════════════════════════════╗
 ║           /proxy-setup — Summary Report              ║
 ╠══════════════════════════════════════════════════════╣
 ║ Configuration                                        ║
-║   Provider:  claude | gemini | both                  ║
-║   Model(s):  CHOSEN_MODEL_CLAUDE / _GEMINI           ║
-║   Cleanup:   replace_and_remove                      ║
-║   Port:      PROXY_PORT                              ║
+║   Provider:  Claude via CLIProxyAPI                  ║
+║   Model:     CHOSEN_MODEL_CLAUDE                     ║
+║   Cleanup:   CLEANUP_MODE                            ║
 ╠══════════════════════════════════════════════════════╣
 ║ System                                               ║
-║   Claude token:  valid (N days left)                 ║
-║   Gemini token:  valid / n/a                         ║
-║   Proxy:  running on port PROXY_PORT                 ║
+║   CLIProxyAPI: ✓ HEALTHY (N auth clients)            ║
+║              → http://localhost:8317                  ║
+║   OAuth: managed automatically (refresh every 15min) ║
 ╠══════════════════════════════════════════════════════╣
 ║ Files Modified                                       ║
 ║   · src/services/llm.py                              ║
-║     - replaced AsyncAnthropic → AsyncOpenAI          ║
+║     - added get_anthropic_client()                   ║
 ║     - model → CHOSEN_MODEL_CLAUDE                    ║
 ║   · requirements.txt                                 ║
-║     - removed: anthropic                             ║
-║     - added:   openai>=1.0.0                         ║
+║     - present: anthropic                             ║
 ║   · .env                                             ║
-║     - removed: ANTHROPIC_API_KEY                     ║
-║     - present: AI_PROXY_URL, CLAUDE_CODE_OAUTH_TOKEN ║
+║     - present: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY ║
+║     - removed: (stale keys if any)                   ║
 ╠══════════════════════════════════════════════════════╣
 ║ Skipped                                              ║
 ║   · tests/ (excluded by policy)                      ║
 ╠══════════════════════════════════════════════════════╣
 ║ LLM Validation                                       ║
-║   claude-sonnet-4-6:  ✓ PASS                         ║
-║   Response: "I am claude-sonnet-4-6, working..."     ║
+║   CHOSEN_MODEL_CLAUDE:  ✓ PASS                       ║
+║   Response: "I am working correctly..."              ║
 ╠══════════════════════════════════════════════════════╣
 ║ Next Steps                                           ║
 ║   1. source ~/.bashrc                                ║
 ║   2. pip install -r requirements.txt                 ║
-║   3. Test your app normally                          ║
+║   3. docker compose up -d                            ║
+║   4. Test your app normally                          ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
-If Phase 7 failed, end with:
+If Phase 6 failed, end with:
 ```
 ╠══════════════════════════════════════════════════════╣
 ║ ⚠  VALIDATION FAILED                                ║
-║   One or more models did not respond.                ║
+║   The model did not respond.                         ║
 ║   The proxy setup is incomplete.                     ║
-║   See Phase 7 errors above for details.              ║
+║   See Phase 6 errors above for details.              ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
-**Setup is only considered complete when Phase 7 passes for all chosen models.**
+**Setup is only considered complete when Phase 6 passes.**
 
 ---
 
 ## Constraints
 
-- Phase 0 must complete all 3 wizard steps before any action
+- Phase 0 must complete both wizard steps before any action
 - Never skip the confirmation at end of wizard
 - Phase 2 scan must be shown before any code changes
-- Never attempt `claude --version` to refresh token — Claude has no silent refresh
+- Never ask user to run `claude setup-token` — CLIProxyAPI handles tokens
 - Never commit to git
 - Never print token values
 - Stop and explain clearly if any phase fails

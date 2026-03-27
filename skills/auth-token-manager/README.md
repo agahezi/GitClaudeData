@@ -1,19 +1,15 @@
 # auth-token-manager
 
-Manages AI provider OAuth tokens for personal use — no paid API keys needed.
-Solves two distinct problems with two dedicated solutions.
+Manages Claude OAuth tokens for personal use — no paid API keys needed.
 
 ---
 
-## The Two Problems & Solutions
+## The Problem & Solution
 
-### Problem A: Claude Code CLI gets 401 every few hours
-**Cause:** CLI OAuth tokens in `~/.claude.json` expire after a few hours.
-**Fix:** CLIProxyAPI — Docker service on port 8317 that intercepts CLI requests
-and auto-refreshes tokens.
+**Problem:** Claude Code CLI OAuth tokens in `~/.claude.json` expire every few hours → 401 errors.
 
-### Problem B: Other apps need Claude/Gemini without API key
-**Fix:** LiteLLM proxy — Docker service on port 8080 with OpenAI-compatible API.
+**Solution:** CLIProxyAPI — Docker service on port 8317 that intercepts CLI requests
+and auto-refreshes tokens permanently.
 
 ---
 
@@ -23,16 +19,21 @@ and auto-refreshes tokens.
 ┌─────────────────────────────────────────────────────────────┐
 │                         Your Machine                        │
 │                                                             │
-│  ~/.config/ai-auth/tokens.env   ← central token store      │
+│  ~/proxy-stack/                                             │
+│  ├── docker-compose.yml                                     │
+│  ├── cli-proxy-api/config.yaml                              │
+│  ├── claude-login.sh          ← one-time OAuth              │
+│  └── check_proxy_health.sh   ← hourly cron                 │
 │                                                             │
-│  ┌──────────────────────┐   ┌─────────────────────────┐    │
-│  │  CLIProxyAPI         │   │  LiteLLM proxy          │    │
-│  │  localhost:8317      │   │  localhost:8080         │    │
-│  │  fixes CLI 401s      │   │  for your apps          │    │
-│  └──────────────────────┘   └─────────────────────────┘    │
-│         ↑                             ↑                     │
-│  Claude Code CLI            Project A, B, N                 │
-│  (ANTHROPIC_BASE_URL)       (AI_PROXY_URL)                  │
+│  ┌──────────────────────────────────┐                       │
+│  │  CLIProxyAPI (cli-proxy-api)     │                       │
+│  │  localhost:8317                  │                       │
+│  │  volume: proxy-stack_cli_proxy_auth                      │
+│  └──────────────────────────────────┘                       │
+│         ↑                                                   │
+│  Claude Code CLI                                            │
+│  (ANTHROPIC_BASE_URL=http://localhost:8317)                 │
+│  (ANTHROPIC_API_KEY=dummy)                                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,17 +47,14 @@ auth-token-manager/
 ├── SKILL.md                              ← AI agent entry point
 ├── scripts/
 │   ├── install.sh                        ← first-time machine wizard
-│   ├── cliproxyapi_manager.sh            ← CLIProxyAPI lifecycle (NEW)
-│   ├── refresh_token.py                  ← daily cron
-│   └── proxy_manager.py                  ← LiteLLM lifecycle
-├── commands/
-│   └── proxy-setup/
-│       └── proxy-setup.md               ← agent for project integration
+│   ├── cliproxyapi_manager.sh            ← thin docker-compose wrapper
+│   └── refresh_token.py                  ← daily cron + project migration
 └── references/
-    ├── cliproxyapi.md                    ← CLIProxyAPI full guide (NEW)
-    ├── cli-proxy.md                      ← LiteLLM connection patterns
-    ├── claude-oauth.md                   ← claude setup-token internals
-    └── gemini-oauth.md                   ← Gemini gcloud flow
+    ├── cliproxyapi.md                    ← CLIProxyAPI full guide
+    └── claude-oauth.md                   ← Claude token internals
+
+commands/proxy-setup/
+└── proxy-setup.md                        ← agent for project integration
 ```
 
 ---
@@ -70,17 +68,17 @@ bash ~/.claude/skills/auth-token-manager/scripts/install.sh
 # 2. Reload shell
 source ~/.bashrc
 
-# 3. Fix 401 errors permanently (one-time login)
-cliproxy login
+# 3. One-time OAuth login
+bash ~/proxy-stack/claude-login.sh
 ```
 
 **For remote/SSH (Termux, PC → server):**
 ```bash
 # On your LOCAL machine first:
-ssh -L 54545:127.0.0.1:54545 user@your-server
+ssh -L 54545:127.0.0.1:54545 user@<TAILSCALE_IP>
 
 # Then on the server:
-cliproxy login
+bash ~/proxy-stack/claude-login.sh
 # Open the URL in your LOCAL browser
 ```
 
@@ -88,33 +86,27 @@ cliproxy login
 
 ## All Commands
 
-### CLIProxyAPI — fixes Claude Code CLI 401 errors
+### CLIProxyAPI management
 ```bash
-cliproxy setup     # first-time setup
-cliproxy login     # one-time OAuth authentication
 cliproxy start
 cliproxy stop
 cliproxy restart
-cliproxy status    # shows container + token + ANTHROPIC_BASE_URL
+cliproxy status    # shows container + health + ANTHROPIC_BASE_URL
 cliproxy logs
-```
-
-### LiteLLM proxy — for your apps
-```bash
-token-proxy               # start
-token-proxy --stop
-token-proxy --restart
-token-proxy --status
-token-proxy --logs
-token-proxy --port 9090   # custom port
 ```
 
 ### Token management
 ```bash
-token-status                    # full status: Claude + Gemini + both proxies
+token-status                    # Claude + CLIProxy status
 token-refresh                   # update central env
 token-refresh --force
-token-link /path/to/project     # wire a project to LiteLLM proxy
+token-link /path/to/project     # wire a project to CLIProxyAPI
+```
+
+### Project migration
+```bash
+token-refresh --migrate-project /path/to/project
+token-refresh --migrate-project .   # current directory
 ```
 
 ---
@@ -123,35 +115,40 @@ token-link /path/to/project     # wire a project to LiteLLM proxy
 
 | Token | Stored | Expires | Refresh |
 |-------|--------|---------|---------|
-| Claude Code CLI OAuth | `~/.claude.json` | hours | ✅ CLIProxyAPI auto |
-| claude setup-token | `~/.claude/.credentials.json` | ~1 year | ❌ manual yearly |
-| Gemini gcloud | `~/.config/gcloud/` | ~1 hour | ✅ gcloud auto |
+| Claude Code CLI OAuth | Docker volume `proxy-stack_cli_proxy_auth` | hours | CLIProxyAPI auto |
+| Claude credentials | `~/.claude/.credentials.json` | ~1 year | manual yearly |
 
 ---
 
-## Connecting a Project (LiteLLM proxy)
+## Connecting a Project
 
 ```python
-# Python / FastAPI
-from openai import AsyncOpenAI
 import os
+import anthropic
 
-llm = AsyncOpenAI(
-    base_url=os.getenv("AI_PROXY_URL", "http://localhost:8080/v1"),
-    api_key="local",
-)
+def get_anthropic_client() -> anthropic.Anthropic:
+    return anthropic.Anthropic(
+        api_key=os.getenv("ANTHROPIC_API_KEY", "dummy"),
+        base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+    )
+
+client = get_anthropic_client()
 ```
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml (project using CLIProxyAPI)
 services:
   your-app:
-    env_file: .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
-      - OPENAI_BASE_URL=http://host.docker.internal:8080/v1
-      - OPENAI_API_KEY=local
+      - ANTHROPIC_BASE_URL=http://cli-proxy-api:8317
+      - ANTHROPIC_API_KEY=dummy
+    networks:
+      - shared-proxy
+      - default
+
+networks:
+  shared-proxy:
+    external: true
 ```
 
 ---
@@ -159,6 +156,6 @@ services:
 ## Security
 
 - `tokens.env` is `chmod 600` — owner-only
-- CLIProxyAPI tokens in `~/.config/ai-auth/cliproxyapi/tokens/` — owner-only
+- CLIProxyAPI tokens in Docker volume — not on host filesystem
 - `.env` files auto-added to `.gitignore` by `token-link`
 - CLIProxyAPI listens on localhost only — not exposed externally

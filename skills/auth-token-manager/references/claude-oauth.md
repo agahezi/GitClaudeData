@@ -1,19 +1,13 @@
 # Claude OAuth — Reference
 
-## מהות הטוקן
+## Token Basics
 
-`claude setup-token` מייצר `accessToken` בתוקף ~שנה.
-**אין silent refresh** — כשפג, חייב `claude setup-token` ידני שוב.
+Claude Code CLI uses OAuth tokens stored in `~/.claude/.credentials.json`.
+These tokens are valid for ~1 year. **No silent refresh** — when expired,
+renewal requires browser auth via CLIProxyAPI.
 
 Token format: `sk-ant-oat01-...`
-נשמר ב: `~/.claude/.credentials.json`
-
-## הבדל מ-`claude auth login`
-
-| פקודה | תוקף | שימוש |
-|-------|------|-------|
-| `claude setup-token` | ~שנה | headless / אוטומציה ← **זה מה שאנחנו משתמשים** |
-| `claude auth login` | 8-12 שעות | sessions אינטראקטיביות בלבד |
+Stored in: `~/.claude/.credentials.json`
 
 ## credentials.json
 
@@ -27,33 +21,35 @@ Token format: `sk-ant-oat01-...`
 }
 ```
 
-> ⚠️ `refreshToken` קיים בקובץ אבל **לא פונקציונלי לחידוש שקט**.
-> Anthropic לא חשפה API לחידוש ללא browser interaction.
+> `refreshToken` exists in the file but **is not functional for silent refresh**.
+> Anthropic has not exposed an API for renewal without browser interaction.
 
-## מה הcron עושה בפועל
+## What the cron does
 
 ```
-כל יום 06:00 — refresh_token.py
-  → קורא accessToken הקיים מcredentials.json
-  → מחשב ימים לפקיעה (expiresAt)
-  → days_left ≥ 14   → כותב לcentral env, שקט
-  → days_left 7-13   → כותב + התראה בלוג
-  → days_left < 7    → כותב + התראה דחופה
-  → days_left < 0    → עוצר + הנחיות לחידוש ידני
+Daily at 06:00 — refresh_token.py
+  → Reads existing accessToken from credentials.json
+  → Calculates days until expiry (expiresAt)
+  → days_left >= 14  → writes to central env, silent
+  → days_left 7-13   → writes + warning in log
+  → days_left < 7    → writes + urgent warning
+  → days_left < 0    → stops + instructions for renewal
 ```
 
-## חידוש שנתי
+## Token Renewal
+
+When the token expires or CLIProxyAPI loses auth:
 
 ```bash
-claude setup-token          # browser auth (~2 דקות)
-token-refresh --force       # כותב טוקן חדש לכל .env
-source ~/.bashrc            # טעינה בshell הנוכחי
+bash ~/proxy-stack/claude-login.sh    # browser auth via SSH tunnel
+token-refresh --force                 # write new token to central env
+source ~/.bashrc                      # reload in current shell
 ```
 
-## שגיאות נפוצות
+## Common Errors
 
-| שגיאה | סיבה | פתרון |
-|-------|------|--------|
-| `OAuth token revoked` | פג/בוטל | חידוש שנתי |
-| `Missing state parameter` | URL נפתח פעמיים | Ctrl+C → retry |
-| `403 scope error` | שימוש ב-`auth login` במקום `setup-token` | הרץ `claude setup-token` |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `OAuth token revoked` | Expired/revoked | Run `bash ~/proxy-stack/claude-login.sh` |
+| `Missing state parameter` | URL opened twice | Ctrl+C, retry |
+| `401 auth_unavailable` | CLIProxyAPI has no auth | Run `bash ~/proxy-stack/claude-login.sh` |
