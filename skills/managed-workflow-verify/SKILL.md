@@ -38,15 +38,22 @@ Detect the project's test runner before running tests:
 
 ## Invocation
 
-- **Auto:** `managed-workflow-execute` triggers this after all tasks are `[X]`
-- **Manual:** `/managed-workflow-verify docs/plans/2026-03-07-some-plan.md`
+- **Per-task (primary):** `managed-workflow-execute` triggers this **immediately after each task**
+  is executed, passing both the plan path and a `task_number`:
+  `/managed-workflow-verify docs/plans/<plan>.md --task 3`. When `--task N` is given, verify ONLY
+  that single task and exit — this is the per-task verify gate.
+- **Manual (whole plan):** `/managed-workflow-verify docs/plans/2026-03-07-some-plan.md` — no
+  `--task` argument verifies every executed-but-unverified task in the plan.
 - **No argument:** Finds the latest fully-completed plan in `docs/plans/` (all first-column checkboxes `[X]`)
 
 ## Execution Flow
 
 ### Step 1: Load the Plan
 - Read the plan file
-- Scan the `## Progress` section for tasks where:
+- **If invoked with `--task N`:** the task to process is exactly task N — and only it. Confirm its
+  first column is `[X]` (if not, report that task N has not been executed yet and stop). Ignore all
+  other tasks this run. This is the per-task verify gate path.
+- **Otherwise (whole-plan mode):** scan the `## Progress` section for tasks where:
   - First column is `[X]` (executed) AND
   - Second column is `[ ]` (unverified) OR `[F]` (needs re-verify)
 - These are the tasks to process this session — skip `[V]` and `[R]` tasks entirely
@@ -67,10 +74,18 @@ Before dispatching the QA agent, check whether tests exist for the changed files
 ### Step 3: Dispatch QA Agent Per Task
 For EACH task identified in Step 1, dispatch the `qa_tester` agent with:
 - `plan_file`: The plan file path
+- `task_number`: The task's number
 - `task_description`: The task's detail section text
 - `changed_files`: The files listed in that task's **Files:** section
 - `has_existing_tests`: Whether test files were found in Step 2 (true/false)
 - `is_reverify`: Whether this is a re-verify pass after bug fixes (true/false)
+
+**Agent split (hybrid):** `qa_tester` owns the test-writing/mutation/integration phases. It does
+NOT re-implement code review — for **Phase 5 it dispatches the existing `gsd-code-reviewer`
+agent** (scoped to this task's `changed_files`, `depth: standard`) and consumes its findings
+inline. This is why `qa_tester` needs Edit/Bash (to write tests and fix bugs) while code review
+is delegated to the stronger, purpose-built reviewer. The skill itself only dispatches
+`qa_tester`; the reviewer hand-off happens inside the agent.
 
 **For normal verification passes** — the agent runs all 7 phases in strict order:
 
@@ -78,7 +93,10 @@ For EACH task identified in Step 1, dispatch the `qa_tester` agent with:
 2. **Phase 2 — Coverage Gap Analysis:** Cross-references plan requirements and domain checklist against existing tests. Writes ALL missing tests before proceeding. Does not defer.
 3. **Phase 3 — Test Quality Audit:** Detects tautological tests, over-mocked tests, copied expected values, and trivially-passing tests. Rewrites bad tests before proceeding.
 4. **Phase 4 — Mutation Verification:** Temporarily breaks critical functions to prove tests actually catch regressions. Flags ZOMBIE tests that don't fail on mutation.
-5. **Phase 5 — Code Review:** Default value mismatches, missing constructor fields, stale derived values, crash-on-first-run, prompt ordering, silent error swallowing.
+5. **Phase 5 — Code Review (delegated to `gsd-code-reviewer`):** The qa_tester dispatches
+   `gsd-code-reviewer` scoped to the task's changed files and consumes its BLOCKER/WARNING
+   findings, plus checks default-value mismatches, missing constructor fields, stale derived
+   values, crash-on-first-run, prompt ordering, silent error swallowing.
 6. **Phase 6 — Concurrency & Async Audit:** Simultaneous state transitions, duplicate task submission, race between timeout and completion, cache/DB state divergence.
 7. **Phase 7 — Integration Gap Analysis:** End-to-end data flow tracing, boundary mismatches between changed and unchanged code.
 
@@ -90,13 +108,23 @@ For EACH task identified in Step 1, dispatch the `qa_tester` agent with:
 **All phases are mandatory for their pass type. No phase may be skipped.**
 
 ### Step 4: Update Progress After Each Task
-Immediately after the QA agent finishes each task — before moving to the next — update the second column in the plan file:
+Immediately after the QA agent finishes each task — before moving to the next — update the second
+column in the plan file. The mapping depends on whether this was a normal or re-verify pass:
 
-- **No bugs found** → mark `[V]`
-- **Bugs found and fixed** → mark `[F]` (will be re-verified in a future session or later this session if context allows)
-- **Re-verify passed** → mark `[R]`
+- **Normal pass, agent verdict `CLEAN` (no bugs)** → mark `[V]`
+- **Normal pass, agent verdict `FIXED` (bugs found and fixed)** → mark `[F]` — this task is NOT
+  done; it MUST be re-verified before it can be considered complete.
+- **Re-verify pass (task was `[F]`), now `CLEAN`** → mark `[R]` (done)
+- **Re-verify pass, still `FIXED`** → keep `[F]` and re-verify again — a fix that introduces a new
+  bug never advances to `[R]`.
 
-Do NOT wait until all tasks are done to update progress. Update after each task so a context interruption doesn't lose track.
+**Per-task gate behavior:** when invoked with `--task N`, a task that lands on `[F]` means
+verification did NOT pass clean. Immediately run a re-verify pass on that same task (the agent's
+fixes are already applied) to drive it to `[R]` before returning control to the executor. The
+executor's hard-gate will not start the next task until this task is `[V]` or `[R]`.
+
+Do NOT wait until all tasks are done to update progress. Update after each task so a context
+interruption doesn't lose track.
 
 ### Step 5: Collect and Report Findings
 Aggregate findings across all tasks verified this session. Report per task as:
@@ -119,8 +147,14 @@ Do NOT report "all clear" without showing work for each phase.
 - Run full test suite to verify all fixes — report exact pass/fail counts as evidence
 - Update task second column to `[F]` after fixing
 
-### Step 7: Context-Aware Loop
-After each task, check context usage:
+### Step 7: Return / Context-Aware Loop
+
+**Per-task mode (`--task N`):** after the task reaches `[V]` or `[R]`, report that task's final
+status and **return immediately** — do not pick up other tasks. Control returns to
+`managed-workflow-execute`, whose hard-gate decides whether to start the next task. This is the
+normal path for the per-task verify gate.
+
+**Whole-plan mode (no `--task`):** after each task, check context usage:
 
 - **Below 60%** → immediately start the next unverified task
 - **Between 60–75%** → continue only if the next task appears small
@@ -151,6 +185,9 @@ Only emit when ALL tasks in the plan have second column `[V]` or `[R]`:
 - NEVER skip a phase — all mandatory phases for the pass type must run
 - NEVER claim "all clear" without evidence from each phase
 - NEVER dispatch QA agent without checking for test existence first (Step 2)
+- Phase 5 (Code Review) is delegated to the `gsd-code-reviewer` agent by `qa_tester` — do not
+  hand-roll a second code-review pass; consume the reviewer's findings
+- When invoked with `--task N`, verify ONLY task N and return — do not process other tasks
 - NEVER modify the first column — execution status is owned by the executor
 - Update the second column immediately after each task — do not batch updates
 - The qa_tester agent is SKEPTICAL by default — assume bugs exist

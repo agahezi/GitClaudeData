@@ -7,24 +7,29 @@ Description: Create a plan in docs/plans/ using Superpowers.
 Usage: /m-plan <topic>
 
 ## /m-run
-Description: Execute the next task from the plan in docs/plans/.
+Description: Execute the next task from the plan in docs/plans/, verifying each task before the next.
 Usage: /m-run
 
-**Post-Execution Gate:** After ALL tasks in the plan are marked `[X]` (completed), you MUST
-automatically invoke `/m-verify` with the plan file path:
+**Per-Task Verify Gate:** Tasks are strictly serial — **execute task N → verify task N → only
+then execute task N+1.** Immediately after EACH task is implemented and marked `[X]`, you MUST
+invoke `/m-verify` scoped to that single task:
 
 ```
-All tasks complete. Running verification...
-/m-verify docs/plans/<plan-file>.md
+Task N implemented. Verifying before continuing...
+/m-verify docs/plans/<plan-file>.md --task N
 ```
 
-Do NOT claim the plan is finished without running verification first.
+A task may not start until the previous task's verification column is `[V]` (clean) or `[R]`
+(re-verified after a fix). If verification finds bugs (`[F]`), they are fixed and re-verified to
+`[R]` before the gate opens. Do NOT batch all execution and verify at the end, and do NOT claim
+the plan is finished without every task verified.
 
 ## /m-verify
-Description: Skeptical verification of a completed plan. Dispatches the QATester agent to audit every completed task.
-Usage: /m-verify <plan-file-path>
+Description: Skeptical verification. Dispatches the `qa_tester` agent (which delegates code review to `gsd-code-reviewer`) to audit task(s).
+Usage: /m-verify <plan-file-path> [--task N]
 
-Can also be invoked manually on any plan:
+- **Per-task (used by the verify gate):** `--task N` verifies exactly one task and returns.
+- **Whole-plan / manual:** omit `--task` to verify every executed-but-unverified task:
 ```
 /m-verify docs/plans/2026-03-07-some-feature-plan.md
 ```
@@ -32,7 +37,8 @@ Can also be invoked manually on any plan:
 ### How it works
 
 1. **Read the plan file** at the given path.
-2. **Extract all completed tasks** — every line matching `- [X][ ] Task N: ...` in the Progress section.
+2. **Select tasks to verify** — if `--task N` was passed, just task N; otherwise every line
+   matching `- [X][ ] Task N: ...` (or `[X][F]`, needs re-verify) in the Progress section.
 3. **For each task**, read the task's detail section to find:
    - **Files:** created or modified
    - **What the task does** (the step descriptions)
@@ -47,7 +53,7 @@ Can also be invoked manually on any plan:
    - Phase 2: Coverage gap analysis
    - Phase 3: Test quality audit (are tests tautological?)
    - Phase 4: Mutation verification
-   - Phase 5: Code review (find real bugs)
+   - Phase 5: Code review (find real bugs) — **delegated to the `gsd-code-reviewer` agent**
    - Phase 6: Concurrency & async audit
    - Phase 7: Integration gap analysis
 6. **Collect findings** across all tasks.
@@ -62,6 +68,6 @@ The verification produces an inline report:
 - Final test suite pass/fail counts as proof
 
 ### When to use
-- Automatically after `/m-run` completes all plan tasks
-- Manually when suspicious about any completed plan
+- Automatically by `/m-run`'s Per-Task Verify Gate — once per task, right after it is implemented
+- Manually (whole-plan) when suspicious about any completed plan
 - After major refactors that "pass everything on the first try"

@@ -13,6 +13,9 @@ This skill creates a persistent, token-saving implementation plan.
 - **Output:** Save to `docs/plans/YYYY-MM-DD_HH_MM<topic>-plan.md`.
 - **Constraint:** Ensure tasks are granular enough as a flat list for single-session execution.
 - **GSD-Ready:** Ensure each task is atomic enough for GSD to implement in one go.
+- **Independently verifiable:** Each task must be testable and verifiable in isolation — the
+  executor runs a per-task verify gate (`execute → verify → only then next task`), so a task
+  whose correctness can only be judged after a later task is too coarse. Split it.
 
 ## MANDATORY Format — Overrides ALL Sub-Skills
 
