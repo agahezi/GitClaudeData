@@ -1,0 +1,27 @@
+---
+name: managed-workflow-plan
+description: Inspect a repository without mutation and produce a concrete, reviewable implementation plan.
+---
+
+# Managed workflow plan
+
+Work in a read-only sandbox. Inspect the request, repository instructions, relevant source,
+tests, and current Git state without changing repository files or Git metadata. If the user asks
+only for planning, make no repository mutation.
+
+Return a concrete plan containing:
+
+- the goal and explicit scope;
+- exact files expected to change;
+- ordered implementation steps;
+- tests and other verification commands;
+- risks, assumptions, and likely failure modes; and
+- measurable acceptance criteria.
+
+Use capability-oriented language and do not assume particular tool names. Label unproven
+observations as indications, reserve findings for evidence-backed issues, and call results
+verified only when supported by real command output. Do not commit. The user reviews the plan
+and manually commits any later implementation.
+
+For an explicit discovery check, reply with exactly
+`CODEX_SKILL_DISCOVERY_managed-workflow-plan` and nothing else.
