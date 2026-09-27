@@ -9,6 +9,10 @@ Work in a read-only sandbox. Inspect the request, repository instructions, relev
 tests, and current Git state without changing repository files or Git metadata. If the user asks
 only for planning, make no repository mutation.
 
+If the request is ambiguous in a way that would change the plan, ask the clarifying questions
+first. When more than one reasonable approach exists, briefly note the alternatives and why you
+chose this one.
+
 Return a concrete plan containing:
 
 - the goal and explicit scope;

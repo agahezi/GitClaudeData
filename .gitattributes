@@ -1,0 +1,2 @@
+# Skill files are installed byte-for-byte, so Git must not rewrite their line endings per OS.
+skills/** -text
