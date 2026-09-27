@@ -1,0 +1,11 @@
+{
+  "source": {
+    "kind": "folder",
+    "location": "C:\\Users\\hezia\\.agents\\skills\\fluid-responsive-design",
+    "path": ""
+  },
+  "targets": [
+    "claude",
+    "codex"
+  ]
+}

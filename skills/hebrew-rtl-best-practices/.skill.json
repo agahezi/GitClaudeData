@@ -1,0 +1,11 @@
+{
+  "source": {
+    "kind": "folder",
+    "location": "C:\\Users\\hezia\\.claude\\skills\\hebrew-rtl-best-practices",
+    "path": ""
+  },
+  "targets": [
+    "claude",
+    "codex"
+  ]
+}
