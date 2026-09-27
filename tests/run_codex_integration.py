@@ -83,17 +83,20 @@ def plan_gate(base):
     process, message = codex(
         repo, base, "plan",
         "Use $managed-workflow-plan to plan adding validated title-case greeting output to app.py. "
-        "The response must include goal, files, ordered steps, tests, risks, and acceptance criteria. "
         "Do not modify anything.",
         "read-only",
     )
     require(process.returncode == 0, process.stdout)
     lowered = message.lower()
-    for term in ("goal", "files", "steps", "tests", "risks", "acceptance criteria"):
-        require(term in lowered, f"plan missing {term}: {message}")
+    require("superpowers" not in lowered and "missing dependency" not in lowered,
+            f"planner still requires external dependency: {message}")
+    require("design" in lowered and "test" in lowered, f"design or test approach missing: {message}")
+    require("approv" in lowered or "confirm" in lowered, f"design approval not requested: {message}")
+    require("## progress" not in lowered and "**implementation steps:**" not in lowered,
+            f"implementation plan drafted before design approval: {message}")
     require(snapshot(repo) == before, "plan mutated repository")
     require(git(repo, "rev-parse", "--verify", "HEAD").returncode == head_before != 0, "plan created commit")
-    return "semantic plan contract; read-only; no commit"
+    return "standalone design and approval requested; read-only; no commit"
 
 
 def execute_gate(base):
