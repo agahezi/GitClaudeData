@@ -46,3 +46,11 @@ and replace conflicting copies). After `add` or `update`, review with `git statu
   `~/.claude/plugins/installed_plugins.json` or in `claude plugin list` output.
 - **Local copies.** Skills added from a local folder get no update checks; add them from their web
   link instead to get them.
+
+## Managed workflow
+
+The three managed-workflow skills use the shared `skills/` catalog. The planner contains its own
+repository discovery, design review, and approval process. Plans record execution and verification
+in separate progress columns. The executor owns the first column; the verifier owns only the second
+column and may update that checkbox after reviewing a completed task. This workflow does not need
+an external brainstorming plugin.
