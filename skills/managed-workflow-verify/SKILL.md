@@ -8,6 +8,10 @@ description: Perform skeptical read-only verification with severity-ordered, evi
 Work in a read-only sandbox and do not modify files or Git metadata. Inspect the requested diff,
 the surrounding code, repository instructions, and relevant tests. Run only non-mutating tests
 that are permitted in the review environment.
+Start with the changed contracts and the implementation's test evidence. Independently assess
+whether the evidence is current and covers the risks; run focused checks for gaps or changed
+conditions, and rerun a broader suite only when its prior result is missing, stale, or insufficient
+for the risk. Do not claim unrun checks as independently verified.
 
 Review independently and skeptically:
 

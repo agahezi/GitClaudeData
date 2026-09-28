@@ -22,6 +22,11 @@ Return a concrete plan containing:
 - risks, assumptions, and likely failure modes; and
 - measurable acceptance criteria.
 
+For each step, identify the focused tests that demonstrate its behavior, including relevant
+negative and boundary cases. Specify when a broader suite is warranted (such as after changes
+to shared code or at integration) and which acceptance criteria it covers. Do not schedule the
+same broad suite after every step without a change that justifies rerunning it.
+
 Use capability-oriented language and do not assume particular tool names. Label unproven
 observations as indications, reserve findings for evidence-backed issues, and call results
 verified only when supported by real command output. Do not commit. The user reviews the plan

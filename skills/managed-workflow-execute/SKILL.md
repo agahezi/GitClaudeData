@@ -13,11 +13,17 @@ needs authority that was not granted.
 Prefer tests that demonstrate the requested behavior, including negative and boundary cases.
 For bug fixes and behavior changes, write or update the test first and confirm it fails for the
 expected reason before implementing.
-Run the relevant tests and then the appropriate broader suite. After the final edit, rerun the
-relevant tests and check the exit code and failure count before reporting. Check each acceptance
-criterion from the plan and report whether the evidence shows it is met. Report actual commands
-and real output summaries. Never fabricate a successful result, hide a failure, or describe an
-indication as verified. Do not assume particular tool names or external workflow dependencies.
+Run focused tests for each changed behavior. Run the appropriate broader suite at integration
+points or before completion; rerun it when later changes could invalidate its result, not after
+every task by default. After the final edit, rerun affected tests and check the exit code and
+failure count before reporting. Keep test output concise when tests pass; preserve the full
+failure details needed for diagnosis. Avoid redundant tests that prove the same behavior.
+For long plans, give brief progress checkpoints after related tasks, noting completed work,
+test evidence, and remaining work without re-reading the whole plan or repository by default.
+Check each acceptance criterion from the plan and report whether the evidence shows it is met.
+Report actual commands and real output summaries. Never fabricate a successful result, hide a
+failure, or describe an indication as verified. Do not assume particular tool names or external
+workflow dependencies.
 
 Do not commit, amend, tag, push, or otherwise alter repository history. Summarize changed files,
 test evidence, blockers, and remaining risks so the user can review and commit manually.
