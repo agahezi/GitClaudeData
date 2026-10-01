@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,123 @@ def load_module():
     return module
 
 
+PLAN_SKILL = ROOT / "skills" / "managed-workflow-plan"
+VALIDATOR = PLAN_SKILL / "scripts" / "validate_plan.py"
+
+
+def load_validator():
+    # Bytecode inside skills/ would be rejected by the installer.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec = importlib.util.spec_from_file_location("validate_plan_under_test", VALIDATOR)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+def plan_template():
+    text = (PLAN_SKILL / "SKILL.md").read_text(encoding="utf-8")
+    return re.search(r"^````markdown\n(.*?)\n````$", text, re.S | re.M).group(1) + "\n"
+
+
+class PlanValidatorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.validator = load_validator()
+        cls.template = plan_template()
+        start = cls.template.index("### Task 1:")
+        cls.task_block = cls.template[start:cls.template.index("## Risks")]
+
+    def errors(self, text, new=False):
+        return [message for _, message in self.validator.validate(text, new=new)[0]]
+
+    def assert_invalid(self, text, fragment, new=False):
+        errors = self.errors(text, new)
+        self.assertTrue(any(fragment in message for message in errors), errors)
+
+    def two_tasks(self, first, second, status="Pending", evidence=""):
+        text = self.template.replace(
+            "- [ ][ ] Task 1: <short description>",
+            f"- {first} Task 1: First\n- {second} Task 2: Second")
+        second_block = self.task_block.replace("### Task 1: <short description>", "### Task 2: Second")
+        text = text.replace("### Task 1: <short description>", "### Task 1: First")
+        text = text.replace("## Risks", second_block + "## Risks")
+        text = text.replace("**Status:** Pending", f"**Status:** {status}")
+        return text.replace("<!-- Append-only. One concise line per state transition. -->", evidence)
+
+    def test_skill_template_is_a_valid_new_plan(self):
+        self.assertEqual(self.errors(self.template, new=True), [])
+
+    def test_command_line_reports_ok_and_invalid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = Path(temporary) / "plan.md"
+            plan.write_text(self.template, encoding="utf-8")
+            ok = subprocess.run([sys.executable, "-B", str(VALIDATOR), "--new", str(plan)],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+            self.assertEqual((ok.returncode, ok.stdout.strip()), (0, "PLAN_FORMAT_OK: 1 task(s)"))
+            plan.write_text(self.template.replace("## Evidence Log", "## Evidence"), encoding="utf-8")
+            bad = subprocess.run([sys.executable, "-B", str(VALIDATOR), str(plan)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+            self.assertEqual(bad.returncode, 1)
+            self.assertIn("PLAN_FORMAT_INVALID", bad.stdout)
+
+    def test_rejects_missing_or_misordered_sections(self):
+        self.assert_invalid(self.template.replace("## Evidence Log\n", ""), "missing section '## Evidence Log'")
+        diagrams = self.template[self.template.index("## Process Diagrams"):self.template.index("## Progress")]
+        moved = self.template.replace(diagrams, "").replace("---\n\n### Task 1", diagrams + "---\n\n### Task 1")
+        self.assert_invalid(moved, "out of order")
+
+    def test_rejects_malformed_progress_and_mismatched_tasks(self):
+        self.assert_invalid(self.template.replace("- [ ][ ] Task 1:", "- [x] Task 1:"), "malformed progress entry")
+        self.assert_invalid(self.template.replace("- [ ][ ] Task 1:", "- [ ][V] Task 1:"),
+                            "unexecuted task cannot")
+        self.assert_invalid(self.template.replace("### Task 1: <short description>", "### Task 1: Other"),
+                            "task headings must match Progress")
+        self.assert_invalid(self.template.replace("- [ ][ ] Task 1:", "- [X][ ] Task 1:"),
+                            "initialize every task", new=True)
+
+    def test_rejects_incomplete_or_oversized_tasks(self):
+        self.assert_invalid(self.template.replace("**Produces:**", "**Outputs:**"),
+                            "exactly one '**Produces:**'")
+        steps = "\n".join(f"{number}. step" for number in range(1, 9))
+        self.assert_invalid(self.template.replace("1. <step>", steps), "split it")
+        self.assert_invalid(self.template.replace("- `<command>`", "- run the tests"),
+                            "Verification needs")
+
+    def test_diagrams_are_required_unless_declared_not_applicable(self):
+        start = self.template.index("```mermaid")
+        end = self.template.index("## Progress")
+        self.assert_invalid(self.template[:start] + self.template[end:], "stateDiagram-v2")
+        declared = (self.template[:start]
+                    + "**State chart:** Not applicable - stateless formatting change\n\n"
+                    + "**Sequence diagram:** Not applicable - single component\n\n"
+                    + self.template[end:])
+        self.assertEqual(self.errors(declared, new=True), [])
+
+    def test_enforces_task_order_and_completion_evidence(self):
+        self.assertEqual(self.errors(self.two_tasks("[X][V]", "[X][ ]")), [])
+        self.assert_invalid(self.two_tasks("[X][ ]", "[X][ ]"), "advanced before Task 1")
+        completed = self.two_tasks("[X][V]", "[X][R]", status="Completed").replace(
+            "**Status:** Completed",
+            "**Status:** Completed\n**Tasks:** 2; 1 verified; 1 remediated\n"
+            "**Final verification:** `cmd` -> exit 0\n**Acceptance:** met\n**Residual risks:** none")
+        self.assert_invalid(completed, "requires a FINAL evidence entry")
+        long_entry = "- Task 1 EXECUTE: `cmd` -> exit 0; " + "x" * 240
+        self.assert_invalid(self.two_tasks("[X][V]", "[ ][ ]", evidence=long_entry), "exceeds 240")
+
+    def test_live_harness_fixture_plans_are_valid(self):
+        spec = importlib.util.spec_from_file_location(
+            "harness_under_test", ROOT / "tests" / "run_codex_integration.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        for name, text in harness.fixture_plans().items():
+            with self.subTest(plan=name):
+                self.assertEqual(self.errors(text, new=name == "calculator"), [])
+
+
 class ManagedWorkflowContractTests(unittest.TestCase):
     SKILLS = {
         name: ROOT / "skills" / name / "SKILL.md"
@@ -43,6 +161,8 @@ class ManagedWorkflowContractTests(unittest.TestCase):
             "managed-workflow-plan",
             "managed-workflow-execute",
             "managed-workflow-verify",
+            "managed-workflow-debug",
+            "managed-workflow-complete",
         )
     }
 
@@ -57,9 +177,18 @@ class ManagedWorkflowContractTests(unittest.TestCase):
                 self.assertNotIn("=======", text)
                 self.assertNotIn(">>>>>>>", text)
 
+    def test_workflow_skill_names_match_their_folders(self):
+        for name, path in self.SKILLS.items():
+            with self.subTest(skill=name):
+                self.assertIn(f"\nname: {name}\n", path.read_text(encoding="utf-8"))
+
     def test_all_skills_preserve_strict_task_order(self):
         expected = "PLAN -> EXECUTE one task -> test -> VERIFY that task -> next task"
-        for name in self.SKILLS:
+        for name in (
+            "managed-workflow-plan",
+            "managed-workflow-execute",
+            "managed-workflow-verify",
+        ):
             with self.subTest(skill=name):
                 self.assertIn(expected, self.text(name))
 
@@ -70,10 +199,20 @@ class ManagedWorkflowContractTests(unittest.TestCase):
             "**Bounded:**",
             "**Architectural:**",
             "## Task sizing",
-            "usually contain three to seven ordered implementation steps",
+            "at most seven numbered implementation steps",
+            "## Process Diagrams",
+            "stateDiagram-v2",
+            "sequenceDiagram",
+            "scripts/validate_plan.py --new",
+            "PLAN_FORMAT_OK",
             "**Inputs:**",
             "**Produces:**",
             "persistent plan is still",
+            "## Evidence Log",
+            "## Completion Summary",
+            "## Plan Acceptance",
+            "## Final Verification",
+            "at most 240 characters",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, text)
@@ -82,12 +221,18 @@ class ManagedWorkflowContractTests(unittest.TestCase):
         text = self.text("managed-workflow-execute")
         for requirement in (
             "## Task readiness gate",
+            "## Plan format gate",
+            "single entry point after planning",
+            "invoke `managed-workflow-verify` for it",
             "execution checkbox unchanged",
             "Immediately run the focused check",
             "change the first checkbox from `[ ]` to `[X]`",
             "Do not start another task until",
             "request the smallest plan or scope revision",
             "If the user approves a revised plan or task split",
+            "managed-workflow-debug",
+            "managed-workflow-complete",
+            "append one `EXECUTE` evidence entry",
             "[X][V]",
             "[X][R]",
         ):
@@ -98,14 +243,85 @@ class ManagedWorkflowContractTests(unittest.TestCase):
         text = self.text("managed-workflow-verify")
         for requirement in (
             "Run the task's focused verification",
+            "managed-workflow-plan/scripts/validate_plan.py",
             "Update only the selected task's second checkbox",
             "**Verified:**",
             "**Indication:**",
             "**Not checked:**",
             "Recheck every original finding",
+            "append evidence in the same repository edit",
+            "confirmed final-check failure owned by that task",
             "[X][V]",
             "[X][F]",
             "[X][R]",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_debugger_is_root_cause_scoped_and_owns_no_plan_state(self):
+        text = self.text("managed-workflow-debug")
+        for requirement in (
+            "one falsifiable hypothesis at a time",
+            "## Debugging flow",
+            "**Trace to the controlling boundary.**",
+            "**Correct minimally.**",
+            "never\nchanges Progress, Evidence Log, Completion Summary",
+            "## Escalation",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_completer_requires_clean_tasks_and_writes_only_final_state(self):
+        text = self.text("managed-workflow-complete")
+        for requirement in (
+            "Every Progress entry must be `[X][V]` or `[X][R]`",
+            "managed-workflow-plan/scripts/validate_plan.py",
+            "Do not modify implementation files",
+            "one append-only `FINAL` Evidence Log entry",
+            "## Completion Summary format",
+            "**Status:** Completed | Blocked",
+            "managed-workflow-verify",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_repository_instructions_define_evidence_ownership(self):
+        text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        for requirement in (
+            "executor may update only its execution checkbox and append",
+            "verifier may update only its verification checkbox and",
+            "completer may update only the completion summary",
+            "Evidence is append-only",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_planner_evidence_examples_fit_the_context_budget(self):
+        text = self.text("managed-workflow-plan")
+        examples = [
+            line for line in text.splitlines()
+            if line.startswith("- Task ") or line.startswith("- FINAL:")
+        ]
+        self.assertGreaterEqual(len(examples), 5)
+        for line in examples:
+            with self.subTest(evidence=line):
+                self.assertLessEqual(len(line), 240)
+
+    def test_integration_harness_covers_recovery_and_completion(self):
+        text = (ROOT / "tests" / "run_codex_integration.py").read_text(encoding="utf-8")
+        for requirement in (
+            "def require_evidence_append_only",
+            "def require_completion_summary",
+            "def debug_gate",
+            "def complete_block_gate",
+            "def remediation_gate",
+            "def plan_write_gate",
+            "def require_valid_plan",
+            '"behavior:plan-write"',
+            '"behavior:debug"',
+            '"behavior:complete-block"',
+            '"behavior:remediation"',
+            "CODEX_INTEGRATION_SKIPPED",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, text)
@@ -179,6 +395,61 @@ class Base(unittest.TestCase):
         self.git(upstream, "add", "-A")
         self.git(upstream, "commit", "--quiet", "-m", "change")
         return self.git(upstream, "rev-parse", "HEAD")
+
+
+class CrossToolSupportTests(Base):
+    PORTABLE_FIELDS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+
+    def test_every_skill_uses_portable_metadata_for_both_tools(self):
+        module = load_module()
+        for folder in sorted(path for path in (ROOT / "skills").iterdir() if path.is_dir()):
+            with self.subTest(skill=folder.name):
+                files, _ = module.read_tree(folder)
+                meta = module.frontmatter(files["SKILL.md"][0])
+                self.assertLessEqual(set(meta), self.PORTABLE_FIELDS)
+                self.assertEqual(meta["name"], folder.name)
+                self.assertLessEqual(len(meta["name"]), 64)
+                self.assertTrue(0 < len(meta["description"]) <= 1024)
+                targets = module.read_metadata(folder).get("targets", list(module.TARGETS))
+                self.assertEqual(set(targets), {"codex", "claude"})
+                files.pop(module.METADATA, None)
+                self.assertEqual(module.claude_only_features(files), [])
+
+    def test_skill_references_and_evidence_locations_exist(self):
+        for folder in sorted(path for path in (ROOT / "skills").iterdir() if path.is_dir()):
+            text = (folder / "SKILL.md").read_text(encoding="utf-8")
+            for reference in sorted(set(re.findall(r"references/[\w./-]+\.md", text))):
+                with self.subTest(skill=folder.name, reference=reference):
+                    self.assertTrue((folder / reference).is_file())
+            evidence = folder / "evidence.json"
+            if evidence.is_file():
+                for claim in json.loads(evidence.read_text(encoding="utf-8"))["claims"]:
+                    for location in claim["appears_in"]:
+                        with self.subTest(skill=folder.name, claim=claim["claim_id"], location=location):
+                            self.assertTrue((folder / location).is_file())
+
+    def test_install_places_skills_and_working_validator_for_both_tools(self):
+        shutil.rmtree(self.repo / "skills")
+        shutil.copytree(ROOT / "skills", self.repo / "skills",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        result = self.run_script("install", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        names = sorted(path.name for path in (ROOT / "skills").iterdir() if path.is_dir())
+        plan = self.base / "plan.md"
+        plan.write_text(plan_template(), encoding="utf-8")
+        for target in TARGETS:
+            for name in names:
+                with self.subTest(target=target, skill=name):
+                    self.assertTrue((self.installed(target, name) / "SKILL.md").is_file())
+            for consumer in ("managed-workflow-execute", "managed-workflow-verify", "managed-workflow-complete"):
+                with self.subTest(target=target, consumer=consumer):
+                    validator = (self.installed(target, consumer) / ".." / "managed-workflow-plan"
+                                 / "scripts" / "validate_plan.py")
+                    checked = subprocess.run([sys.executable, "-B", str(validator), "--new", str(plan)],
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                             check=False)
+                    self.assertEqual(checked.returncode, 0, checked.stdout)
+                    self.assertIn("PLAN_FORMAT_OK", checked.stdout)
 
 
 class InstallTests(Base):

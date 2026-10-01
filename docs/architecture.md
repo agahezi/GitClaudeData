@@ -49,8 +49,23 @@ and replace conflicting copies). After `add` or `update`, review with `git statu
 
 ## Managed workflow
 
-The three managed-workflow skills use the shared `skills/` catalog. The planner contains its own
-repository discovery, design review, and approval process. Plans record execution and verification
-in separate progress columns. The executor owns the first column; the verifier owns only the second
-column and may update that checkbox after reviewing a completed task. This workflow does not need
-an external brainstorming plugin.
+Five managed-workflow skills use the shared `skills/` catalog. The planner contains repository
+discovery, proportional design review, task sizing, and approval. The executor implements one task
+at a time; the verifier independently gates that task before later work begins. The debugger isolates
+unexpected failures inside an approved task, and the completer runs the final whole-plan check.
+
+Plans are the durable source of truth. Separate Progress columns record execution and verification;
+an append-only Evidence Log records one compact line per state transition; the Completion Summary
+records the current end-to-end result. The executor owns the first checkbox and its evidence, the
+verifier owns the second checkbox and its evidence, and the completer owns only final evidence and
+the summary. Agents never commit. This workflow does not need an external brainstorming plugin.
+
+Users invoke only the planner and the executor. The executor is the single resume point: it routes
+by plan state to verification, remediation, debugging, or completion. Every plan explains the
+implemented process with Mermaid state and sequence diagrams before its tasks, unless a diagram is
+declared not applicable.
+
+`skills/managed-workflow-plan/scripts/validate_plan.py` enforces the plan format with Python 3 and
+the standard library only. The planner runs it before reporting a plan; the executor, verifier, and
+completer run it at startup and after each plan edit, resolving it as a sibling skill folder so the
+same relative path works in both `~/.agents/skills` and `~/.claude/skills`.

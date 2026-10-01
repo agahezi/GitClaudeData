@@ -13,6 +13,9 @@ The workflow order is fixed:
 
 `PLAN -> EXECUTE one task -> test -> VERIFY that task -> next task`
 
+After every task is `[X][V]` or `[X][R]`, `managed-workflow-complete` performs the final whole-plan
+check and writes the Completion Summary.
+
 Every implementation task must appear in the plan and receive separate execution and verification
 status. Scope classification changes the depth of planning, never the execution and verification
 gates.
@@ -54,8 +57,10 @@ that timestamp and topic as `docs/plans/YYYY-MM-DD_HH_MM_<topic>-plan.md`. Other
 approved plan with the same plan naming pattern.
 
 For bounded work, the approved in-chat design is sufficient, but the persistent plan is still
-required before `managed-workflow-execute` begins. After writing any plan, request explicit
-implementation approval. Planning approval is not implementation approval.
+required before `managed-workflow-execute` begins. After writing any plan and passing the plan format
+gate, request explicit implementation approval. Planning approval is not implementation approval.
+When the user grants implementation approval, invoke `managed-workflow-execute` for that plan; it
+runs the remaining tasks, their verification, and completion.
 
 When the user supplies an existing plan for formatting only, preserve every substantive statement.
 Change only Markdown structure and progress tracking unless the user separately approves content
@@ -71,8 +76,8 @@ Prefer tasks that:
 
 - have one goal and one cohesive acceptance boundary;
 - touch a small set of tightly related files, without treating file count as a hard limit;
-- usually contain three to seven ordered implementation steps, with fewer allowed for a truly
-   mechanical change;
+- contain at most seven numbered implementation steps, usually three to seven and fewer for a
+  truly mechanical change; split any task that needs more;
 - name one focused verification command and its expected result;
 - define the inputs they consume and the interface or behavior they produce; and
 - include relevant negative and boundary behavior.
@@ -91,9 +96,11 @@ be declared correct by assumption.
 The plan must contain:
 
 - the goal, architecture, technology stack, and explicit scope;
+- process diagrams that explain the implemented behavior before any task details;
 - exact files expected to change;
 - ordered implementation steps sized by the task rules above;
 - tests and other verification commands;
+- plan-level acceptance criteria and one justified final integration command;
 - risks, assumptions, and likely failure modes; and
 - measurable acceptance criteria.
 
@@ -110,6 +117,22 @@ that the executor can read locally.
 Use capability-oriented language and do not assume particular tool names. Label unproven
 observations as indications, reserve findings for evidence-backed issues, and call results verified
 only when supported by real command output.
+
+## Process diagrams
+
+The `## Process Diagrams` section explains, before any task, the process the plan implements, not
+this workflow. Provide two Mermaid diagrams:
+
+- a `stateDiagram-v2` of the lifecycle states and transitions of the main entity or process,
+  including error and terminal states; and
+- a `sequenceDiagram` of the interactions between actors, components, and external systems in the
+  main flow, including the key failure path when relevant.
+
+Keep each diagram to about fifteen states or messages, consistent with the scope, interfaces, and
+tasks. Use plain identifiers and quote labels that contain punctuation. When a diagram adds no
+understanding, such as a stateless formatting change or a single-component edit, replace it with
+`**State chart:** Not applicable - <reason>` or `**Sequence diagram:** Not applicable - <reason>`.
+For architectural work, include the same diagrams in the design presentation for review.
 
 ## Mandatory progress format
 
@@ -138,9 +161,52 @@ The second checkbox is verification status and is owned by `managed-workflow-ver
 Initialize every new task as `[ ][ ]`. Progress descriptions must be under 80 characters. The
 planner never pre-fills either column.
 
-## Required plan structure
+## Persistent evidence
+
+Every plan must contain an append-only `## Evidence Log` and a `## Completion Summary`. Evidence
+survives context compaction and lets later stages resume without replaying the conversation or long
+command output.
+
+Write exactly one concise evidence entry for each state transition. Keep each entry to one Markdown
+line and at most 240 characters. Record the task, stage, command or check, exit code, result count,
+status, and only the decision or residual risk needed later. Never paste full output, stack traces,
+diffs, repository history, or repeated successful results.
+
+Use these forms:
 
 ```markdown
+- Task 1 EXECUTE: `<focused command>` -> exit 0, 8 passed; acceptance met
+- Task 1 VERIFY: `<focused command>` -> exit 0, 8 passed; [V], residual risk: none
+- Task 2 REMEDIATION: HIGH finding at `path:line` addressed; `<command>` -> exit 0
+- Task 2 REVERIFY: original findings resolved; `<command>` -> exit 0; [R]
+- FINAL: `<broad command>` -> exit 0, 42 passed; acceptance met
+```
+
+The planner creates the empty sections. The executor appends only `EXECUTE` and `REMEDIATION`
+entries; the verifier appends only `VERIFY` and `REVERIFY` entries; the completer appends only
+`FINAL` entries and replaces the pending completion summary. No stage edits or deletes prior
+evidence. Consumers read only global constraints, the selected task, and evidence entries relevant
+to that task; the completer reads the full compact log once.
+
+## Plan format gate
+
+The plan format is a contract for the executor, verifier, and completer. Copy the structure below
+exactly, filling every placeholder; keep the section order, headings, field labels, and checkbox
+syntax unchanged. Optional overview sections may appear only before `## Process Diagrams`.
+
+After writing or repairing a plan, run this skill's bundled validator with Python 3 (`python3`, or
+`python` where it is Python 3):
+
+`python3 <this-skill-folder>/scripts/validate_plan.py --new <plan-path>`
+
+Omit `--new` when repairing a plan that already has progress or evidence. On
+`PLAN_FORMAT_INVALID`, fix every reported line and rerun until it prints `PLAN_FORMAT_OK`. Report a
+plan as ready only after `PLAN_FORMAT_OK`, and include that line in the response. If Python is
+unavailable, state that the plan is unvalidated; never claim validation without the output.
+
+## Required plan structure
+
+````markdown
 # <Feature Name> Implementation Plan
 
 **Goal:** <one sentence>
@@ -151,9 +217,44 @@ planner never pre-fills either column.
 
 <in-scope and out-of-scope work>
 
+## Plan Acceptance
+
+- <measurable end-to-end result>
+
+## Final Verification
+
+- `<broad command>` covers <integration or shared-code risk>
+
+## Process Diagrams
+
+```mermaid
+stateDiagram-v2
+    [*] --> Received
+    Received --> Processed: valid input
+    Received --> Rejected: invalid input
+    Processed --> [*]
+    Rejected --> [*]
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Service
+    User->>Service: request
+    Service-->>User: result or error
+```
+
 ## Progress
 
 - [ ][ ] Task 1: <short description>
+
+## Evidence Log
+
+<!-- Append-only. One concise line per state transition. -->
+
+## Completion Summary
+
+**Status:** Pending
 
 ---
 
@@ -187,7 +288,7 @@ planner never pre-fills either column.
 ## Risks, Assumptions, and Likely Failure Modes
 
 - <item>
-```
+````
 
 Each task must be independently implementable and verifiable. Every task detail heading and Progress
 entry must use the same task number and short description. Order tasks so each consumes only explicit
