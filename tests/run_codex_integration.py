@@ -100,7 +100,7 @@ def plan_gate(base):
 
 
 def execute_gate(base):
-    repo = fixture(base, "execute", ["managed-workflow-execute"])
+    repo = fixture(base, "execute", ["managed-workflow-execute", "managed-workflow-verify"])
     source = repo / "calculator.py"
     source.write_text("def add(left, right):\n    raise NotImplementedError\n", encoding="utf-8")
     test = repo / "test_calculator.py"
@@ -109,26 +109,52 @@ def execute_gate(base):
         "class TestAdd(unittest.TestCase):\n"
         "    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n\n"
         "if __name__ == '__main__':\n    unittest.main()\n", encoding="utf-8")
+    plan = repo / "docs" / "plans" / "calculator-plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        "# Calculator Implementation Plan\n\n"
+        "**Goal:** Implement arithmetic addition.\n"
+        "**Architecture:** Keep the existing function boundary.\n"
+        "**Tech Stack:** Python unittest\n\n"
+        "## Scope\n\nModify only calculator.py and this plan's progress status.\n\n"
+        "## Progress\n\n- [ ][ ] Task 1: Implement addition\n\n---\n\n"
+        "### Task 1: Implement addition\n\n"
+        "**Files:**\n\n- Modify: `calculator.py`\n\n"
+        "**Inputs:**\n\n- Existing `add(left, right)` function\n\n"
+        "**Implementation steps:**\n\n"
+        "1. Run the focused test and confirm the expected failure.\n"
+        "2. Return the arithmetic sum.\n"
+        "3. Run the focused test and check the result.\n\n"
+        "**Verification:**\n\n"
+        "- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`\n\n"
+        "**Acceptance criteria:**\n\n- `add(2, 3)` returns `5`.\n\n"
+        "**Produces:**\n\n- Working arithmetic addition through `add`.\n\n"
+        "## Risks, Assumptions, and Likely Failure Modes\n\n- Numeric operands use Python addition.\n",
+        encoding="utf-8",
+    )
     before = snapshot(repo)
     process, message = codex(
         repo, base, "execute",
-        "Use $managed-workflow-execute. Approved plan: modify only calculator.py so add(left, right) "
-        "returns the arithmetic sum; run PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v. Do not commit.",
+        "Use $managed-workflow-execute to execute and independently verify Task 1 from the approved "
+        "docs/plans/calculator-plan.md. Both managed workflow skills are installed. Do not commit.",
         "workspace-write",
     )
     require(process.returncode == 0, process.stdout)
     after = snapshot(repo)
     changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
-    require(changed == {"calculator.py"}, f"files outside approved scope changed: {sorted(changed)}")
+    require(changed == {"calculator.py", "docs/plans/calculator-plan.md"},
+            f"files outside approved scope changed: {sorted(changed)}")
     test_result = subprocess.run(
         [sys.executable, "-m", "unittest", "-v"], cwd=repo, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, check=False,
     )
     require(test_result.returncode == 0, test_result.stdout)
+    require("- [X][V] Task 1: Implement addition" in plan.read_text(encoding="utf-8"),
+            f"task did not complete execution and verification gates: {plan.read_text(encoding='utf-8')}")
     require(git(repo, "rev-parse", "--verify", "HEAD").returncode != 0, "execute created commit")
     require("pass" in message.lower() or "ok" in message.lower(), "execute omitted test result")
-    return "only calculator.py changed; deterministic unittest passed; no commit"
+    return "approved files changed; unittest passed; task reached [X][V]; no commit"
 
 
 def verify_gate(base):

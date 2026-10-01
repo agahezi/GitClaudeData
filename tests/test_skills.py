@@ -36,6 +36,81 @@ def load_module():
     return module
 
 
+class ManagedWorkflowContractTests(unittest.TestCase):
+    SKILLS = {
+        name: ROOT / "skills" / name / "SKILL.md"
+        for name in (
+            "managed-workflow-plan",
+            "managed-workflow-execute",
+            "managed-workflow-verify",
+        )
+    }
+
+    def text(self, name):
+        return self.SKILLS[name].read_text(encoding="utf-8")
+
+    def test_workflow_skills_have_no_merge_markers(self):
+        for name, path in self.SKILLS.items():
+            with self.subTest(skill=name):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("<<<<<<<", text)
+                self.assertNotIn("=======", text)
+                self.assertNotIn(">>>>>>>", text)
+
+    def test_all_skills_preserve_strict_task_order(self):
+        expected = "PLAN -> EXECUTE one task -> test -> VERIFY that task -> next task"
+        for name in self.SKILLS:
+            with self.subTest(skill=name):
+                self.assertIn(expected, self.text(name))
+
+    def test_planner_scales_design_and_enforces_task_sizing(self):
+        text = self.text("managed-workflow-plan")
+        for requirement in (
+            "**Spike:**",
+            "**Bounded:**",
+            "**Architectural:**",
+            "## Task sizing",
+            "usually contain three to seven ordered implementation steps",
+            "**Inputs:**",
+            "**Produces:**",
+            "persistent plan is still",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_executor_enforces_readiness_tests_and_verification(self):
+        text = self.text("managed-workflow-execute")
+        for requirement in (
+            "## Task readiness gate",
+            "execution checkbox unchanged",
+            "Immediately run the focused check",
+            "change the first checkbox from `[ ]` to `[X]`",
+            "Do not start another task until",
+            "request the smallest plan or scope revision",
+            "If the user approves a revised plan or task split",
+            "[X][V]",
+            "[X][R]",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+    def test_verifier_owns_only_verification_status(self):
+        text = self.text("managed-workflow-verify")
+        for requirement in (
+            "Run the task's focused verification",
+            "Update only the selected task's second checkbox",
+            "**Verified:**",
+            "**Indication:**",
+            "**Not checked:**",
+            "Recheck every original finding",
+            "[X][V]",
+            "[X][F]",
+            "[X][R]",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
