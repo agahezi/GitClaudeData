@@ -1,0 +1,593 @@
+# A visual plan: the content file. `node ../runtime/pack.mjs example.yaml` makes example.html.
+title: Scheduling Sent Messages in PostBox
+status:
+  badge: open
+  text: 2 decisions open
+opening: 'PostBox sends a message the moment a person presses Send. This page is the design for <b>Send later</b>: the person picks a time, and PostBox sends the message at that time, also when the person is offline. It is new code beside the send path that exists. Click a box to zoom in.'
+examplesNote: 'The page uses two people throughout: '
+examples:
+  - name: Example (Ann)
+    text: schedules one message for 09:00 the next day
+  - name: Example (Ben)
+    text: has 50 scheduled messages and tries to add one more
+retired:
+  - deferred message
+  - delayed send
+blocks:
+  - kind: problem
+    problem: A person who writes at night wants the message to arrive in the morning. Today the only way is to keep the draft and remember. Support gets this request each week, and two competitors ship it. <b>Why now:</b> the composer is being redesigned this quarter, and the send path got its own worker last month, so the pieces to build on exist.
+    today:
+      label: How sending works today
+      items:
+        - The composer posts the message to <code>POST /messages</code> (<code>server/src/messages/routes.ts:41</code>), which calls the mail provider at once and stores the result.
+        - The send worker (<code>server/src/mail/worker.ts:12</code>) retries a send that the provider refused, up to 3 times, from a retry table.
+        - Drafts live in <code>drafts</code> (<code>server/src/drafts/store.ts:9</code>) and are never sent by the server.
+        - The Sent folder reads <code>messages where status = 'sent'</code> (<code>server/src/folders/sent.ts:18</code>).
+  - kind: map
+    walkthrough: the composer saves the message with a send time instead of sending it. A worker wakes each minute, claims the messages whose time has come, sends each one through the provider that exists, and marks it sent or failed. The person sees the message in a Scheduled folder until it is sent.
+    note: The provider and the Sent folder do not change. Everything new is in the three middle boxes.
+    legend:
+      - - code
+        - plain code
+      - - ext
+        - outside service
+      - - data
+        - data in / out
+    root: map
+    nodes:
+      map:
+        title: Overview
+        view:
+          type: diagram
+          viewBox: 0 0 1000 400
+          label: 'Scheduled send: overview'
+          boxes:
+            - node: composer
+              x: 20
+              'y': 140
+              w: 150
+              h: 96
+            - node: api
+              x: 210
+              'y': 140
+              w: 150
+              h: 96
+            - node: store
+              x: 400
+              'y': 140
+              w: 150
+              h: 96
+            - node: worker
+              x: 590
+              'y': 140
+              w: 150
+              h: 96
+            - node: provider
+              x: 800
+              'y': 140
+              w: 180
+              h: 96
+            - node: folder
+              x: 210
+              'y': 290
+              w: 340
+              h: 70
+          svg: |
+            <path d="M170 188 H208" class="arrow" marker-end="url(#ah)"/>
+            <path d="M360 188 H398" class="arrow" marker-end="url(#ah)"/>
+            <path d="M550 188 H588" class="arrow" marker-end="url(#ah)"/>
+            <text x="569" y="180" text-anchor="middle" class="m" font-size="11">due</text>
+            <path d="M740 188 H798" class="arrow" marker-end="url(#ah)"/>
+            <path d="M475 236 V288" class="arrow" marker-end="url(#ah)" stroke-dasharray="4 4"/>
+            <path d="M665 236 V260 H475" class="arrow" stroke-dasharray="4 4"/>
+            <text x="560" y="254" text-anchor="middle" class="m" font-size="11">marks sent or failed</text>
+            <text x="20" y="60" class="t" font-weight="700" font-size="13">New: 1 (one menu), 2, 3, 4, the folder. Existing: 5, the send worker's retry table, the Sent folder.</text>
+      composer:
+        title: 1 · Composer
+        badges:
+          - - code
+            - ui
+            - one new menu
+        one: The composer gets a Send later menu beside Send. The person picks a time; the composer posts the message with that time. Nothing is sent.
+        in:
+          items:
+            - the draft
+            - a time from the menu
+          from: The person.
+          how: A click.
+        out:
+          items:
+            - POST /scheduled with the message and the time
+          to: 2 · API.
+          how: One request.
+        view:
+          type: parts
+          parts:
+            - - code
+              - Send later
+              - a menu beside Send
+            - - code
+              - pick a time
+              - presets and a date picker
+            - - code
+              - post
+              - the message and the time
+        notes:
+          Send later: A menu button beside Send. The presets are tomorrow 09:00, Monday 09:00, and a date picker. A time in the past is refused in the menu.
+          pick a time: The time is stored in UTC with the zone of the person, so a message set for 09:00 is sent at 09:00 in that zone also after a zone change.
+          post: The composer calls <code>POST /scheduled</code> and closes. On a refusal (the limit, see decision 1) it shows the reason and keeps the draft open.
+        example: |-
+          Ann · draft to the team · Send later › tomorrow 09:00
+          POST /scheduled {message, send_at: 2026-10-15T07:00:00Z, zone: Europe/Paris}
+          201 {id: 7f3a…, status: scheduled}
+        exampleLabel: Example (Ann)
+        cls: code
+        sub: Send later picks a time
+      api:
+        title: 2 · API
+        badges:
+          - - code
+            - route
+            - POST /scheduled
+          - - code
+            - rule
+            - the limit
+        one: 'One route that saves the message with its time and refuses what must not be saved: a time in the past, a message over the limit of the person. It never calls the provider.'
+        in:
+          items:
+            - the message
+            - send_at, zone
+          from: 1 · Composer.
+          how: POST /scheduled.
+        out:
+          items:
+            - a row in the store, status scheduled
+            - 201 with the id, or 422 with the reason
+          to: 3 · Store, and back to the composer.
+          how: One insert.
+        view:
+          type: parts
+          parts:
+            - - code
+              - check the time
+              - not in the past
+            - - code
+              - check the limit
+              - decision 1
+            - - code
+              - insert
+              - status scheduled
+        notes:
+          check the time: A send time more than one minute in the past is refused with 422. One minute of tolerance covers the clock of the device.
+          check the limit: The count of rows of the person with status scheduled must stay under the limit. Decision 1 picks the limit. The refusal names the limit.
+          insert: One row with the message, the time, the zone and status scheduled. The same message id as a sent message would get, so the Sent folder later shows it with no change.
+        example: 'Ben · 50 scheduled · POST /scheduled → 422 {reason: "limit of 50 scheduled messages"}'
+        exampleLabel: Example (Ben)
+        cls: code
+        sub: |-
+          POST /scheduled
+          saves, does not send
+      store:
+        title: 3 · Store
+        badges:
+          - - data
+            - table
+            - scheduled_messages
+        one: 'One new table: one row for each scheduled message, with its time and its status. The worker claims rows from it, the folder reads it, the API inserts into it.'
+        in:
+          items:
+            - inserts from the API
+            - status changes from the worker and the folder
+          from: 2, 4, the folder.
+          how: SQL.
+        out:
+          items:
+            - the due rows, claimed
+            - the rows of a person, for the folder
+          to: 4 · Worker, the folder.
+          how: Two queries, both limited by an index.
+        view:
+          type: table
+          columns:
+            - column
+            - meaning
+          rows:
+            - - id
+              - the message id, the same the Sent folder uses
+            - - user_id
+              - the owner
+            - - send_at
+              - UTC
+            - - zone
+              - the zone of the person at save time
+            - - status
+              - scheduled · sending · sent · failed · cancelled
+            - - claimed_at
+              - set by the worker; a claim older than 5 minutes is stale
+            - - error
+              - the last error of the provider, for the folder
+        notes: {}
+        example: id 7f3a… · user ann · send_at 07:00Z · zone Europe/Paris · status scheduled · claimed_at null
+        exampleLabel: Example (Ann) · one row
+        cls: data
+        sub: |-
+          scheduled_messages
+          one row per message
+      worker:
+        title: 4 · Worker
+        badges:
+          - - code
+            - job
+            - each minute
+          - - ext
+            - calls
+            - the provider
+        one: A job that wakes each minute, claims the rows whose time has come, sends each one through the provider that exists, and marks it sent or failed. It is the only place that sends a scheduled message.
+        in:
+          items:
+            - the due rows
+          from: 3 · Store.
+          how: One claim query, at most 100 rows.
+        out:
+          items:
+            - one send for each row
+            - status sent or failed, with the error
+          to: 5 · Mail provider; 3 · Store.
+          how: The send function that exists; one update per row.
+        view:
+          type: parts
+          parts:
+            - - code
+              - claim
+              - due and not claimed
+            - - ext
+              - send
+              - the function that exists
+            - - code
+              - mark
+              - sent or failed
+        children:
+          send: send-loop
+        notes:
+          claim: One statement sets status sending and claimed_at on the rows with send_at in the past and status scheduled, 100 at most, and returns them. Two workers cannot claim the same row.
+          send: The send function the send path uses today, with the same message shape. A refusal of the provider is an error on the row, not an exception. Open the loop for the retry branch.
+          mark: 'sent on success, with the provider id; failed with the error otherwise. A claim older than 5 minutes with status sending is a worker that died: the next run claims it again.'
+        example: |-
+          07:00:03 · claim 3 rows · send 7f3a… → provider id m-1192 · mark sent
+          07:00:04 · send 81c0… → 503 from the provider · mark failed (error: 503)
+        exampleLabel: Example (Ann) · one run of the worker
+        cls: code
+        sub: |-
+          each minute: claim,
+          send, mark
+      send-loop:
+        title: The send loop, with the retry branch
+        one: What the worker does for one claimed row. The retry branch is decision 2.
+        view:
+          type: diagram
+          viewBox: 0 0 760 260
+          label: The send loop
+          boxes:
+            - part: claimed row
+              cls: data
+              x: 20
+              'y': 40
+              w: 150
+              h: 56
+              sub: status sending
+            - part: send
+              cls: ext
+              x: 220
+              'y': 40
+              w: 150
+              h: 56
+              sub: the provider · 10 s limit
+            - part: ok
+              cls: code
+              title: mark sent
+              x: 420
+              'y': 20
+              w: 150
+              h: 44
+            - part: refused
+              cls: code
+              title: refused or timeout
+              x: 420
+              'y': 90
+              w: 150
+              h: 44
+            - part: retry
+              cls: code
+              title: retry? · decision 2
+              x: 420
+              'y': 170
+              w: 310
+              h: 76
+              dashed: true
+              sub: |-
+                A: 3 retries, 5 minutes apart
+                B: none, mark failed at once
+          svg: |
+            <path d="M170 65 H218" class="arrow" marker-end="url(#ah)"/>
+            <path d="M370 65 H395 V42 H418" class="arrow" marker-end="url(#ah)"/>
+            <path d="M370 65 H395 V112 H418" class="arrow" marker-end="url(#ah)"/>
+            <path d="M495 134 V168" class="arrow" marker-end="url(#ah)" stroke-dasharray="4 4"/>
+            <path d="M420 200 H300 V96" class="arrow" marker-end="url(#ah)" stroke-dasharray="4 4"/>
+            <text x="308" y="150" text-anchor="start" class="m sm">back to send, 5 minutes later</text>
+            <text x="20" y="248" class="m sm">dashed: the branch that decision 2 adds or removes</text>
+        notes:
+          claimed row: A row the claim statement returned. Its status is sending and claimed_at is now.
+          send: 'The send function that exists, with a 10-second limit on the call. A refusal (4xx), a server error (5xx) and a timeout are all one outcome: not sent.'
+          ok: Status sent, the provider id stored. The Sent folder shows the message from this moment.
+          refused: The error is stored on the row. What happens next is decision 2.
+          retry: 'Option A: the row goes back to scheduled with send_at five minutes later, three times at most, then failed. Option B: failed at once; the person sees it in the folder and can press Send now.'
+      provider:
+        title: 5 · Mail provider
+        badges:
+          - - ext
+            - exists
+            - not changed
+        one: The outside service that delivers mail. The send path uses it today through one function, and the worker uses the same function. Nothing here changes.
+        in:
+          items:
+            - one message
+          from: 4 · Worker.
+          how: The send function that exists.
+        out:
+          items:
+            - a provider id, or an error
+          to: 4 · Worker.
+          how: The return value.
+        view:
+          type: parts
+          parts:
+            - - ext
+              - deliver
+              - the API of the provider
+        notes:
+          deliver: The same call, the same credentials, the same rate limit as today. A scheduled send counts against the same quota as a direct send.
+        cls: ext
+        sub: exists · not changed
+      folder:
+        title: The Scheduled folder
+        badges:
+          - - code
+            - ui
+            - one new folder
+        one: 'A folder that lists the scheduled messages of the person, newest time first, with three actions on each: edit, send now, cancel. A message leaves the folder when it is sent or cancelled.'
+        in:
+          items:
+            - the rows of the person
+          from: 3 · Store.
+          how: One query by user_id and status.
+        out:
+          items:
+            - 'edit: a new time or text'
+            - 'send now: send_at = now'
+            - 'cancel: status cancelled'
+          to: 3 · Store.
+          how: Edit and cancel run only while status is scheduled; send now also runs on a failed message.
+        view:
+          type: machine
+          states:
+            - - scheduled
+              - saved, waiting for its time
+            - - sending
+              - the worker holds it
+            - - sent
+              - moved to Sent
+            - - failed
+              - kept, with the error
+            - - cancelled
+              - back in Drafts
+          grid:
+            - - scheduled
+              - sending
+              - sent
+            - - cancelled
+              - failed
+              - .
+          arrows:
+            - - scheduled
+              - sending
+              - due
+            - - sending
+              - sent
+              - ok
+            - - sending
+              - failed
+              - error
+            - - scheduled
+              - cancelled
+              - Cancel
+            - - failed
+              - cancelled
+              - Cancel
+            - - failed
+              - scheduled
+              - Send now
+        notes:
+          scheduled: The row is saved and waits. Edit, send now and cancel all work in this state.
+          sending: The worker claimed the row. The folder shows it as sending and offers no action. A cancel that arrives now is refused with the reason.
+          sent: The message is in the Sent folder, where it looks like any sent message.
+          failed: The folder shows the error of the provider. Send now puts it back to scheduled with send_at = now.
+          cancelled: The message goes back to Drafts with its text. The row stays for a day, then is deleted.
+        example: |-
+          Scheduled (2)
+            to the team · tomorrow 09:00 · Edit · Send now · Cancel
+            to Ben · Monday 09:00 · Edit · Send now · Cancel
+        exampleLabel: Example (Ann)
+        cls: code
+        sub: reads the store · edit, send now, cancel
+  - kind: terms
+    sub: The words are the words of the messages API.
+    cards:
+      - term: message
+        cls: car
+        title: One mail
+        text: The text, the recipients and the attachments, with one id. The same id in the store, in the Sent folder and at the provider.
+        example: <b>Ann:</b> the message to the team.
+      - term: scheduled message
+        cls: cell
+        title: A message with a send time
+        text: 'A message the API saved with send_at and status scheduled. It is not a draft: the server owns it until it is sent or cancelled.'
+        example: <b>Ann:</b> the same message, saved for tomorrow 09:00.
+      - term: send time
+        cls: slot
+        title: send_at and zone
+        text: The moment the worker claims the message, stored in UTC with the zone of the person. The worker is late by one minute at most.
+    extra:
+      - title: The older words
+        html: The product brief said "deferred message" and the support tickets say "delayed send". Both mean a scheduled message. The code uses scheduled everywhere.
+  - kind: traces
+    title: 'Traces: one scheduled message'
+    sub: Ann schedules one message for 09:00. The call tree shows each step and what it passes on. The cards show the cases where the behaviour differs.
+    calls: |-
+      Send later › tomorrow 09:00 -- the composer posts the message and the time @ composer
+        POST /scheduled -- checks the time and the limit · inserts the row · 201 @ api
+          insert scheduled_messages -- status scheduled · send_at 07:00Z @ store
+        the Scheduled folder -- lists the row · Edit · Send now · Cancel @ folder
+        worker run at 07:00 -- claims 3 due rows, 100 at most @ worker
+          claim -- status sending · claimed_at now @ store
+          send -- the function that exists · provider id m-1192 @ provider
+          mark sent -- the Sent folder shows the message @ store
+    cards:
+      - badge: withheld
+        title: Send now from the folder
+        html: Ann presses Send now. The folder sets send_at to now. The next run of the worker, within one minute, sends it like any due row. No second send path exists.
+      - badge: round trip
+        title: Edit, then cancel
+        html: Ann changes the time to Monday, then cancels. Both updates run only while the status is scheduled. The message goes back to Drafts with its text; the row is deleted after a day.
+      - badge: failed
+        title: The provider is down
+        html: The send returns 503. The worker marks the row failed with the error. Decision 2 says whether it retries first. The folder shows the error and Send now.
+      - badge: recovered
+        title: The worker dies mid-send
+        html: A row stays in status sending with claimed_at 10 minutes old. The next run treats a claim older than 5 minutes as stale and claims it again. The provider can receive the message twice if the first send got through; the provider id on the row, when present, prevents the second send.
+  - kind: constraints
+    sub: The settings the design takes from the send path that exists, and the ones it adds.
+    rows:
+      - value: 100 rows for each worker run
+        by: The claim query
+        badge: keep
+        text: The batch size of the retry worker that exists. One run sends in under a minute at the rate limit of the provider.
+      - value: A claim is stale after 5 minutes
+        by: The claim query
+        badge: new
+        text: A send takes 10 seconds at most, so 5 minutes is a dead worker, not a slow one.
+      - value: 10 seconds for one send
+        by: The send function
+        badge: keep
+        text: The limit the send path uses today. A longer wait blocks the batch.
+      - value: One minute of tolerance for a time in the past
+        by: The API
+        badge: new
+        text: The clock of a phone can be a minute off. A larger tolerance would send at once what the person meant for later.
+      - value: The cancelled row is deleted after one day
+        by: A nightly job that exists
+        badge: flag
+        text: Support can ask to see what was cancelled. One day is a guess; make sure with support before the lock.
+  - kind: data
+    sub: The one new table, and what the API returns.
+    cards:
+      - badge: new
+        title: The table · <code>scheduled_messages</code>
+        html: |-
+          <p>One row for each scheduled message, keyed by the message id. The worker reads it by time, the folder by person.</p><div class="box"><pre>create table scheduled_messages (
+            id uuid primary key,
+            user_id uuid not null,
+            send_at timestamptz not null,
+            zone text not null,
+            status text not null default 'scheduled',
+            claimed_at timestamptz,
+            provider_id text,
+            error text
+          );
+          create index on scheduled_messages (send_at) where status = 'scheduled';
+          create index on scheduled_messages (user_id, status);</pre></div><p>The message text lives in <code>messages</code> as today; this table holds only the schedule.</p>
+      - badge: exists
+        title: The response of <code>POST /scheduled</code>
+        html: '<p>201 with the id and the status, the same shape <code>POST /messages</code> returns today, so the composer handles both with one function. 422 with a reason the person can read: a time in the past, or the limit.</p>'
+  - kind: decisions
+    settled:
+      - decision: The worker sends; the API never does.
+        from: One send path for scheduled mail, so a bug is in one place.
+        considered: 'Send from the API when the time is within a minute: rejected, two paths.'
+      - decision: The claim is one statement with a stale timeout, not a lock service.
+        from: The retry worker that exists works the same way.
+        considered: 'A queue service: rejected, a second system for one table.'
+      - decision: The send time is stored in UTC with the zone.
+        from: A person who travels still gets 09:00 in their own zone.
+        considered: 'UTC only: rejected, a message set for 09:00 in Paris would go at 10:00 after a move to London.'
+      - decision: A scheduled message uses the same id it will have as a sent message.
+        from: The Sent folder needs no change.
+        considered: —
+    open:
+      - id: limit
+        title: How many scheduled messages one person can hold
+        context: <b>Problem.</b> A person can schedule without end, and the worker sends everything that is due; a script could schedule thousands. <b>Why now:</b> the limit is checked in the API, so it must be known before the route is built. <b>Known:</b> the retry table that exists has no limit and has never had more than 300 rows for one person (<code>server/src/mail/worker.ts:12</code>); the heaviest user has 40 drafts. <b>Affected:</b> every person; support, who answers the refusal.
+        options:
+          - label: A · 50 for each person
+            how: One count query in the API before the insert; the composer shows the refusal.
+            gains: Above any real use seen today. A script is stopped early.
+            costs: A team account that schedules a newsletter to many people hits it.
+            effort: One query. Low.
+            reversible: Yes, one number.
+          - label: B · 500 for each person
+            how: The same query, a larger number.
+            gains: No real person reaches it.
+            costs: A script can queue 500 sends before anyone sees it; the provider quota is shared with direct sends.
+            effort: One query. Low.
+            reversible: Yes, one number.
+      - id: retry
+        title: Whether a failed send retries on its own
+        context: <b>Problem.</b> The provider refuses a send now and then (503, a timeout). A scheduled message that fails at 09:00 is seen by the person later, maybe hours later. <b>Why now:</b> the retry branch is in the send loop of the worker; building it later changes the loop. <b>Known:</b> the send path that exists retries 3 times, 5 minutes apart, from its own table (<code>server/src/mail/worker.ts:12</code>), and 2% of sends need a retry. <b>Affected:</b> every scheduled send; the folder, which shows failed messages.
+        options:
+          - label: A · 3 retries, 5 minutes apart, then failed
+            how: On a refusal the row goes back to scheduled with send_at five minutes later and a retry count; after 3, status failed.
+            gains: 2% of scheduled sends arrive without the person doing anything. The same rule as a direct send.
+            costs: A message can arrive 15 minutes late without a word to the person. One more column.
+            effort: One update and one column. Low.
+            reversible: Yes, set the count to 0.
+          - label: B · No retry; failed at once, with Send now in the folder
+            how: Nothing in the loop. The folder shows the error and the Send now action.
+            gains: Nothing is sent that the person did not just confirm. The loop stays three steps.
+            costs: 2% of scheduled sends need the person to notice and act.
+            effort: None.
+            reversible: Yes, a retry can be added later.
+  - kind: risks
+    risks:
+      - A worker that runs on two machines claims the same rows only if the claim statement is wrong; the test with two workers is the proof.
+      - 'The provider quota is shared: a burst of scheduled sends at 09:00 can delay direct sends for a minute.'
+      - A person who changes zone after scheduling gets the message at the saved zone, which is the design, but can read as a bug.
+    changes:
+      - The Sent folder shows messages that the person did not send by hand; their sent time is the worker's time, not the save time.
+      - Drafts no longer hold a message that was scheduled; it is in the Scheduled folder until it is sent or cancelled.
+      - Support sees a new status, failed, with the error of the provider.
+  - kind: goal
+    items:
+      - A person can pick a time in the composer, and the message is sent within one minute of that time.
+      - A scheduled message can be edited, sent now or cancelled until the worker claims it.
+      - Two workers never send the same message twice.
+      - A send that the provider refuses ends as failed with its error, visible in the folder.
+      - The Sent folder and the mail provider are not changed.
+  - kind: scope
+    inside:
+      - The Send later menu in the composer, with presets and a date picker.
+      - The route <code>POST /scheduled</code> with the time and limit checks.
+      - The table <code>scheduled_messages</code> and its two indexes.
+      - 'The worker: claim, send through the function that exists, mark.'
+      - The Scheduled folder with edit, send now and cancel.
+      - The retry branch, if decision 2 takes it.
+    outside:
+      - 'Recurring sends (every Monday): a later change, on the same table.'
+      - A per-recipient send time, or send at the recipient's morning.
+      - Changes to the mail provider, the Sent folder or the direct send path.
+      - 'A notification when a scheduled send fails: support asked; it needs the notification service, which is its own plan.'
+  - kind: reused
+    sub: The code is new. These are the parts it calls.
+    items:
+      - The send function and the provider credentials of the direct send path.
+      - The claim-with-stale-timeout shape of the retry worker that exists.
+      - The message id and the response shape of <code>POST /messages</code>.
+      - The nightly cleanup job, for cancelled rows.

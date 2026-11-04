@@ -1,0 +1,13 @@
+{
+  "source": {
+    "commit": "9ccb13d1b866bf897ae8ad032ecf17d298e41340",
+    "kind": "git",
+    "location": "https://github.com/AlmogBaku/visual-plan.git",
+    "path": "",
+    "ref": null
+  },
+  "targets": [
+    "claude",
+    "codex"
+  ]
+}
