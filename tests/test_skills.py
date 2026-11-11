@@ -312,6 +312,29 @@ class ManagedWorkflowContractTests(unittest.TestCase):
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("One implementation approval authorizes the managed executor", agents)
 
+    def test_run_avoids_redundant_overhead(self):
+        expectations = {
+            "managed-workflow-execute": (
+                "Do not end your turn, pause, or wait for acknowledgment",
+                "continue from step 2 of the\nexecution flow without asking",
+                "do not\n   rerun a focused check that already passed after the last edit",
+                "When the failure output directly identifies its cause",
+                "inline in the same session",
+            ),
+            "managed-workflow-verify": (
+                "## Independence",
+                "Skip the pre-check when invoked inline",
+                "Set `[F]` only for a\n   blocking finding",
+            ),
+            "managed-workflow-complete": ("Skip the pre-check when invoked inline",),
+            "managed-workflow-debug": ("the executor fixes those directly",),
+            "managed-workflow-plan": ("merge adjacent tasks", "pre-approving the plan validator"),
+        }
+        for name, requirements in expectations.items():
+            for requirement in requirements:
+                with self.subTest(skill=name, requirement=requirement):
+                    self.assertIn(requirement, self.text(name))
+
     def test_repository_instructions_define_evidence_ownership(self):
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         for requirement in (

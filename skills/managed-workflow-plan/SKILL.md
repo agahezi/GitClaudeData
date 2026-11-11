@@ -61,7 +61,9 @@ For bounded work, the approved in-chat design is sufficient, but the persistent 
 required before `managed-workflow-execute` begins. After writing any plan and passing the plan format
 gate, request explicit implementation approval once, stating that it authorizes an autonomous run of
 every task, verification, remediation, bounded adjustment, and completion without further
-questions. Planning approval is not implementation approval, but one user message may approve both.
+questions. Mention that pre-approving the plan validator and the plan's verification commands in
+the agent's permission settings avoids interruptions during the run. Planning approval is not
+implementation approval, but one user message may approve both.
 When the user grants implementation approval, invoke `managed-workflow-execute` for that plan; it
 runs the remaining tasks, their verification, and completion.
 
@@ -89,6 +91,8 @@ Split a task when it combines independent behaviors, crosses boundaries that can
 separately, needs unrelated verification strategies, contains an unresolved design choice, or cannot
 be summarized without joining goals with "and". Prefer vertical, working slices over file-layer
 tasks. Do not split tiny same-shape edits that share one behavior and one verification surface.
+Every task carries fixed execution and verification overhead, so merge adjacent tasks that modify
+the same files and share one verification command when the result still fits these rules.
 
 If correct completion depends on a later task, either combine the work into one cohesive task or
 redefine the first task around an independently testable contract. Never create a task that can only

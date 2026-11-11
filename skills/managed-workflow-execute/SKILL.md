@@ -30,6 +30,11 @@ approval or confirmation. Do not ask about implementation details, minor choices
 continue; decide them from the plan, repository conventions, and the approved outcome, and report
 progress briefly.
 
+Run continuously. Do not end your turn, pause, or wait for acknowledgment between tasks or stages;
+a progress report is a one-line status update inside the run, never a stopping point. If context is
+compacted or the run is resumed, reread the Progress section and continue from step 2 of the
+execution flow without asking.
+
 A **bounded adjustment** is an implementation change needed to meet the approved acceptance criteria
 that does not alter them, the approved design, user-visible behavior, public interfaces beyond the
 plan, dependencies, or persistent data. It may touch files directly tied to the task, such as a
@@ -116,26 +121,30 @@ Log entries. Never modify the second column, prior evidence, or the Completion S
    - no such entry and the Completion Summary is not `Completed`: invoke `managed-workflow-complete`;
    - no such entry and the summary is `Completed`: report that the plan is already complete.
 3. Within the selected task, rely on the plan and its evidence rather than conversation memory.
-4. Apply the context discipline and task readiness gate. State one falsifiable implementation
-   hypothesis and the cheapest focused check that could disprove it.
+4. Apply the context discipline and task readiness gate. For a behavior change, state one
+   falsifiable implementation hypothesis and the cheapest focused check that could disprove it;
+   skip this for documentation or mechanical work.
 5. For a bug fix or behavior change, write or update the focused test first and run it. Confirm it
    fails for the expected reason, not because of setup or an unrelated defect. For documentation or
    non-behavioral mechanical work, use the narrowest relevant static check instead.
 6. Make the smallest edit that can satisfy the task. Immediately run the focused check before more
-   reading or editing. If the result is an unexpected failure, or if a verifier finding lacks a
-   demonstrated cause, invoke `managed-workflow-debug`. Use its root-cause evidence to continue the
-   same task; do not patch symptoms or reopen broad exploration.
+   reading or editing. When the failure output directly identifies its cause, such as a syntax
+   error, typo, or missing import, fix it and rerun. If an unexpected failure has no evident cause,
+   or a verifier finding lacks a demonstrated cause, invoke `managed-workflow-debug`. Use its
+   root-cause evidence to continue the same task; do not patch symptoms or reopen broad exploration.
 7. Complete the same task, covering relevant negative and boundary behavior without unrelated
    refactoring. Make bounded adjustments without asking; stop only on a stop condition.
 8. Run the task's focused verification and any broader check explicitly justified by shared-code or
-   integration risk. Do not rerun the same broad suite after every task by default. Read the exit
-   code and failure count.
+   integration risk. Do not rerun the same broad suite after every task by default, and do not
+   rerun a focused check that already passed after the last edit. Read the exit code and failure
+   count.
 9. Check every acceptance criterion and confirm the declared `Produces` contract exists. Only then
    change the first checkbox from `[ ]` to `[X]` and append one `EXECUTE` evidence entry in the same
    repository edit. For remediation of `[X][F]`, leave both columns unchanged and append one
    `REMEDIATION` entry after focused checks pass.
-10. Invoke `managed-workflow-verify` for that task. Do not start another task until the verifier sets
-    its second checkbox to `[V]` or `[R]`; then return to step 2 for the next entry.
+10. Invoke `managed-workflow-verify` for that task, inline in the same session unless the user asked
+    for a separate verifier agent. Do not start another task until the verifier sets its second
+    checkbox to `[V]` or `[R]`; then return to step 2 for the next entry.
 
 After the final task reaches `[X][V]` or `[X][R]`, invoke `managed-workflow-complete`. The plan is not
 complete until its Completion Summary says `Completed`. If completion reopens a task as `[X][F]`,

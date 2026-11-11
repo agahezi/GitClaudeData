@@ -24,6 +24,14 @@ where `<skills-root>` is the folder that contains this skill's folder, using Pyt
 `python` where it is Python 3). Run it before verifying: on `PLAN_FORMAT_INVALID`, stop without
 editing and report the errors. Run it again after your checkbox and evidence edit; on failure,
 correct only that edit. If the validator is missing, stop and report an incomplete installation.
+Skip the pre-check when invoked inline by the executor immediately after its own validator run
+passed with no intervening plan edit.
+
+## Independence
+
+Inline verification in the executor's session is permitted. It stays independent by inspecting the
+current diff and running the focused verification itself, never by relying on the executor's
+reasoning or memory of earlier output.
 
 ## Context discipline
 
@@ -44,9 +52,9 @@ failure output to support a finding.
 The verifier may change only the second column:
 
 - `[X][ ]` to `[X][V]` when the first verification is clean;
-- `[X][ ]` to `[X][F]` when verification finds defects;
+- `[X][ ]` to `[X][F]` when verification finds a blocking defect as defined in step 8;
 - `[X][F]` to `[X][R]` when remediation is re-verified clean; or
-- `[X][F]` remains `[X][F]` when defects remain;
+- `[X][F]` remains `[X][F]` when blocking defects remain;
 - `[X][V]` or `[X][R]` to `[X][F]` only when `managed-workflow-complete` supplies a current,
   confirmed final-check failure owned by that task.
 
@@ -68,9 +76,10 @@ or the Completion Summary. Update the checkbox and append evidence in the same r
    refactoring.
 4. Inspect the relevant diff, controlling code, focused tests, and direct contract boundaries. Run
    the focused verification and compare actual output with the plan's expected result.
-5. Review correctness, negative and boundary behavior, safety, unintended effects, test quality,
-   maintainability, and whether the task remained independently verifiable. Missing behavior,
-   assertions that do not prove it, or reliance on a later task are defects.
+5. Review against the acceptance criteria and `Produces` contract: correctness, negative and
+   boundary behavior, safety, unintended effects, test quality, and whether the task remained
+   independently verifiable. Missing behavior, assertions that do not prove it, or reliance on a
+   later task are defects. Note maintainability or style only as LOW; do not hunt for polish.
 6. Classify results precisely:
    - **Verified:** direct inspection or current command output proves the claim.
    - **Indication:** evidence suggests a concern but is insufficient to call it a defect.
@@ -78,7 +87,10 @@ or the Completion Summary. Update the checkbox and append evidence in the same r
 7. Report confirmed findings in severity order: BLOCKER, HIGH, MEDIUM, LOW. Every finding includes
    a file and line reference, impact, evidence, and bounded remediation. Do not inflate uncertain
    indications into findings.
-8. Update only the selected task's second checkbox according to the verified result and append one
+8. A finding is blocking when it is BLOCKER or HIGH, breaks an acceptance criterion or the
+   `Produces` contract, or is a MEDIUM correctness or test-coverage gap. Set `[F]` only for a
+   blocking finding. Record other MEDIUM or LOW findings as residual risk with `[V]` or `[R]`.
+   Update only the selected task's second checkbox according to the verified result and append one
    evidence entry in the same repository edit. For `[F]`, record the highest severity, concise
    finding, and file reference. For `[V]` or `[R]`, record the focused command, exit code, pass count,
    and residual risk. Follow the plan's one-line format and 240-character limit.

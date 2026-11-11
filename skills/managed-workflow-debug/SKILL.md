@@ -7,7 +7,8 @@ description: Use inside an approved managed-workflow task when a check fails une
 
 Find the root cause of one observed failure, prove it with a discriminating check, and return the
 smallest verified correction to `managed-workflow-execute`. An expected RED test written before a
-behavior change is not a debugging incident.
+behavior change is not a debugging incident, nor is a failure whose output directly identifies its
+cause; the executor fixes those directly.
 
 This skill inherits the selected task's scope and approval. It may change implementation or test
 files only after evidence identifies the cause and only within the task's approved files. It never

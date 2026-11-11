@@ -27,6 +27,8 @@ where `<skills-root>` is the folder that contains this skill's folder, using Pyt
 `python` where it is Python 3). Run it before the entry gate: on `PLAN_FORMAT_INVALID`, stop without
 editing and report the errors. Run it again after writing the `FINAL` entry and summary; on failure,
 correct only that edit. If the validator is missing, stop and report an incomplete installation.
+Skip the pre-check when invoked inline by the executor immediately after a validator run passed with
+no intervening plan edit.
 
 ## Context discipline
 
