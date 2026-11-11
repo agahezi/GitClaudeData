@@ -31,7 +31,8 @@ gates.
    - **Bounded:** a focused change to an existing behavior or flow.
    - **Architectural:** a new subsystem, cross-boundary interface, or structural change.
 3. Ask only questions that resolve material uncertainty. Do not ask for information already present
-   in the request or repository. Prefer one focused question at a time.
+   in the request or repository. Prefer one focused question at a time. Settle during planning every
+   choice that would otherwise interrupt execution, because the executor runs without questions.
 4. For a meaningful design choice, lead with the recommended approach, then describe up to two
    alternatives and their trade-offs. Do not invent alternatives for an obvious local change.
 5. Present a design proportional to the classification:
@@ -58,7 +59,9 @@ approved plan with the same plan naming pattern.
 
 For bounded work, the approved in-chat design is sufficient, but the persistent plan is still
 required before `managed-workflow-execute` begins. After writing any plan and passing the plan format
-gate, request explicit implementation approval. Planning approval is not implementation approval.
+gate, request explicit implementation approval once, stating that it authorizes an autonomous run of
+every task, verification, remediation, bounded adjustment, and completion without further
+questions. Planning approval is not implementation approval, but one user message may approve both.
 When the user grants implementation approval, invoke `managed-workflow-execute` for that plan; it
 runs the remaining tasks, their verification, and completion.
 

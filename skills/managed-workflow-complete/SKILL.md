@@ -50,9 +50,10 @@ rediscover completed task internals without a concrete final-risk reason.
 6. If a final check fails, append one concise `FINAL` failure entry and replace the Completion
    Summary with `Blocked`. For a defect owned by an existing task, invoke `managed-workflow-verify`
    to confirm and reopen that task as `[X][F]`; remediation then returns through
-   `managed-workflow-execute`. For a cross-task gap with no honest owner, request approval to revise
-   the plan with one independently verifiable integration task. Rerun completion only after all
-   tasks return to `[X][V]` or `[X][R]`.
+   `managed-workflow-execute`. If a bounded adjustment within an existing task resolves a cross-task
+   gap, reopen that task the same way without asking. For a cross-task gap with no honest owner,
+   request approval to revise the plan with one independently verifiable integration task. Rerun
+   completion only after all tasks return to `[X][V]` or `[X][R]`.
 
 ## Completion Summary format
 

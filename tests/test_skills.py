@@ -285,6 +285,33 @@ class ManagedWorkflowContractTests(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, text)
 
+    def test_one_implementation_approval_runs_the_plan_autonomously(self):
+        expectations = {
+            "managed-workflow-execute": (
+                "## Autonomous run",
+                "Implementation approval authorizes the whole approved plan",
+                "Explicitly invoking this skill on\nan approved plan is implementation approval",
+                "A **bounded adjustment**",
+                "`adjusted: <what>`",
+                "Stop and ask only when continuing requires",
+                "resume the run autonomously",
+            ),
+            "managed-workflow-plan": (
+                "authorizes an autonomous run",
+                "Settle during planning every",
+            ),
+            "managed-workflow-verify": ("bounded adjustments recorded as `adjusted:`",),
+            "managed-workflow-debug": ("bounded adjustments",),
+            "managed-workflow-complete": ("bounded adjustment",),
+        }
+        for name, requirements in expectations.items():
+            for requirement in requirements:
+                with self.subTest(skill=name, requirement=requirement):
+                    self.assertIn(requirement, self.text(name))
+        self.assertNotIn("Stop if required work exceeds approved files", self.text("managed-workflow-execute"))
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("One implementation approval authorizes the managed executor", agents)
+
     def test_repository_instructions_define_evidence_ownership(self):
         text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         for requirement in (

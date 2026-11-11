@@ -63,8 +63,9 @@ or the Completion Summary. Update the checkbox and append evidence in the same r
 2. Confirm the task is executed and every earlier task is `[X][V]` or `[X][R]`. Do not verify an
    out-of-order task.
 3. Apply the context discipline. Compare the implementation with every acceptance criterion and the
-   declared `Produces` contract. Check that changes remain within approved files and behavior; flag
-   scope growth or unrelated refactoring.
+   declared `Produces` contract. Check that changes remain within approved files and behavior, or
+   are bounded adjustments recorded as `adjusted:` evidence; flag other scope growth or unrelated
+   refactoring.
 4. Inspect the relevant diff, controlling code, focused tests, and direct contract boundaries. Run
    the focused verification and compare actual output with the plan's expected result.
 5. Review correctness, negative and boundary behavior, safety, unintended effects, test quality,

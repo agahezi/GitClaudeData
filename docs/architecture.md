@@ -61,7 +61,9 @@ verifier owns the second checkbox and its evidence, and the completer owns only 
 the summary. Agents never commit. This workflow does not need an external brainstorming plugin.
 
 Users invoke only the planner and the executor. The executor is the single resume point: it routes
-by plan state to verification, remediation, debugging, or completion. Every plan explains the
+by plan state to verification, remediation, debugging, or completion. Discussion and approvals
+happen during planning; one implementation approval starts an autonomous run that makes bounded
+adjustments without asking and stops only at the executor's defined stop conditions. Every plan explains the
 implemented process with Mermaid state and sequence diagrams before its tasks, unless a diagram is
 declared not applicable.
 

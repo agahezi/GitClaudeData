@@ -5,8 +5,9 @@ description: Use when an approved managed plan is ready to execute one correctly
 
 # Managed workflow execute
 
-Use workspace-write only after explicit implementation approval. Read the approved plan and
-repository instructions, remain within the selected task's file boundary, and leave commits and Git
+Use workspace-write only after explicit implementation approval. Explicitly invoking this skill on
+an approved plan is implementation approval. Read the approved plan and repository instructions,
+remain within the selected task's file boundary plus bounded adjustments, and leave commits and Git
 history to the user.
 
 The workflow order is mandatory:
@@ -20,6 +21,31 @@ This skill is the single entry point after planning. It invokes `managed-workflo
 `managed-workflow-debug`, and `managed-workflow-complete` itself; the user does not run them
 separately. Continue task by task until the plan is complete, unless the user limits the run or a
 stop condition applies.
+
+## Autonomous run
+
+Implementation approval authorizes the whole approved plan, not one task. Run every remaining task,
+its verification, any remediation, debugging, and completion without asking the user for further
+approval or confirmation. Do not ask about implementation details, minor choices, or whether to
+continue; decide them from the plan, repository conventions, and the approved outcome, and report
+progress briefly.
+
+A **bounded adjustment** is an implementation change needed to meet the approved acceptance criteria
+that does not alter them, the approved design, user-visible behavior, public interfaces beyond the
+plan, dependencies, or persistent data. It may touch files directly tied to the task, such as a
+focused test, import, fixture, or direct call site. Make bounded adjustments without asking, keep
+them minimal, and record each in that task's evidence entry as `adjusted: <what>`.
+
+Stop and ask only when continuing requires:
+
+- changing a requirement, acceptance criterion, approved design, or public contract;
+- a new dependency, external service, credential, or permission that is not already available;
+- a destructive, irreversible, or shared-system action;
+- choosing between materially different user-visible outcomes that the plan does not settle; or
+- another remediation attempt that would repeat the same approach without new evidence.
+
+On a stop condition, report the exact blocker, its evidence, and the smallest decision needed as one
+question. After the answer, resume the run autonomously.
 
 ## Plan format gate
 
@@ -54,11 +80,12 @@ Before editing, confirm that the selected task has one cohesive goal, explicit f
 ordered steps, focused verification, measurable acceptance criteria, and a `Produces` contract that
 can be tested at this task boundary. File count is a signal, not a limit.
 
-Do not start a task that combines independent behaviors, crosses separately verifiable boundaries,
-needs unrelated test strategies, contains an unresolved design choice, or depends on a later task to
-be judged correct. If the task is oversized or hidden complexity invalidates its design, leave its
-execution checkbox unchanged, explain the smallest useful split, and obtain approval to update the
-plan. Never expand scope silently.
+When an approved task is larger than ideal but its outcome and design remain valid, execute it in
+ordered internal steps without asking or splitting the plan. Only when the task contains an
+unresolved design choice, depends on a later task to be judged correct, or hidden complexity
+invalidates its approved design is a stop condition met: leave its execution checkbox unchanged,
+explain the smallest useful split or revision, and obtain approval to update the plan. Never expand
+scope beyond bounded adjustments.
 
 Tiny same-shape edits with one behavior and one verification surface may remain one task.
 
@@ -99,7 +126,7 @@ Log entries. Never modify the second column, prior evidence, or the Completion S
    demonstrated cause, invoke `managed-workflow-debug`. Use its root-cause evidence to continue the
    same task; do not patch symptoms or reopen broad exploration.
 7. Complete the same task, covering relevant negative and boundary behavior without unrelated
-   refactoring. Stop if required work exceeds approved files or authority.
+   refactoring. Make bounded adjustments without asking; stop only on a stop condition.
 8. Run the task's focused verification and any broader check explicitly justified by shared-code or
    integration risk. Do not rerun the same broad suite after every task by default. Read the exit
    code and failure count.
@@ -119,7 +146,7 @@ command, exit code, concise result, and acceptance outcome. Do not duplicate ter
 plan predates the Evidence Log format, stop and request a planner-approved format upgrade before
 execution; do not create an ad hoc sidecar.
 
-If remediation cannot address every finding within the approved task and files, or another attempt
+If remediation cannot address every finding within the approved task and bounded adjustments, or another attempt
 would repeat the same approach without new evidence, stop the loop. Keep `[X][F]`, report the exact
 blocker and failed evidence, and request the smallest plan or scope revision that can resolve it.
 Resume only after approval; never bypass the failed task or weaken its acceptance criteria.

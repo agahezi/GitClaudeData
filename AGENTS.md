@@ -18,6 +18,8 @@ machine. This file is the instruction authority for all repository work.
   its own evidence entries; the managed verifier may update only its verification checkbox and
   append its own evidence entries. The managed completer may update only the completion summary and
   append final evidence. Evidence is append-only. Other workspace writes require explicit
-  implementation approval. Agents never commit: the user reviews and commits manually.
+  implementation approval. One implementation approval authorizes the managed executor to run the
+  whole plan, including bounded adjustments, without further questions except at its stop
+  conditions. Agents never commit: the user reviews and commits manually.
 
 Run the tests with `python -m unittest discover -s tests -p "test_*.py"`.

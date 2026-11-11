@@ -49,9 +49,10 @@ without new evidence.
 ## Escalation
 
 Stop and return control to the executor when reproduction requires unavailable credentials or an
-unsafe external side effect, when evidence points outside approved files, when observability is
-insufficient to distinguish causes, or when a correction changes the approved design. State the
-missing evidence or smallest scope revision needed. Never weaken a test to hide the symptom.
+unsafe external side effect, when the correction exceeds approved files plus bounded adjustments as
+defined by `managed-workflow-execute`, when observability is insufficient to distinguish causes, or
+when a correction changes the approved design. State the missing evidence or smallest scope revision
+needed. Never weaken a test to hide the symptom.
 
 For an explicit discovery check, reply with exactly
 `CODEX_SKILL_DISCOVERY_managed-workflow-debug` and nothing else.
