@@ -1,0 +1,6 @@
+visual-plan
+Copyright 2026 Almog Baku
+
+This product includes js-yaml (https://github.com/nodeca/js-yaml),
+Copyright (C) 2011-2015 by Vitaly Puzrin, licensed under the MIT License.
+See runtime/vendor/js-yaml.LICENSE.
